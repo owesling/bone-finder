@@ -1,0 +1,1237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bone Finder: webcam anatomy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Spectral:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --film: #0E1D27;
+    --lightbox: #152938;
+    --rule: #2A4557;
+    --bone: #EFE7D4;
+    --muted: #93A8B6;
+    --amber: #F3B63F;
+    --ok: #71C9A0;
+    --err: #E88B7A;
+    --serif: "Spectral", Georgia, "Times New Roman", serif;
+    --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body {
+    background: var(--film);
+    color: var(--bone);
+    font: 15px/1.5 var(--sans);
+    min-height: 100vh;
+  }
+  button, input { font: inherit; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+  header {
+    max-width: 1440px; margin: 0 auto; padding: 22px 24px 10px;
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+  }
+  header h1 {
+    font: 600 30px/1 var(--serif); margin: 0; letter-spacing: -0.01em;
+  }
+  header p { margin: 0; color: var(--muted); }
+
+  .layout {
+    max-width: 1440px; margin: 0 auto; padding: 8px 24px 32px;
+    display: grid; grid-template-columns: minmax(0, 1fr) 370px; gap: 22px; align-items: start;
+  }
+  @media (max-width: 960px) { .layout { grid-template-columns: 1fr; } }
+
+  /* Camera stage */
+  .viewport {
+    position: relative; background: #000; border: 1px solid var(--rule);
+    border-radius: 6px; overflow: hidden; aspect-ratio: 16 / 9;
+  }
+  .viewport.ready { aspect-ratio: auto; }
+  #video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  #canvas { display: block; width: 100%; height: auto; }
+  .start {
+    position: absolute; inset: 0; display: grid; place-content: center; justify-items: start;
+    padding: 32px; gap: 14px; max-width: 560px; margin: 0 auto;
+  }
+  .start h2 { font: 500 32px/1.15 var(--serif); margin: 0; }
+  .start p { margin: 0; color: var(--muted); max-width: 46ch; }
+  .start .error { color: var(--err); }
+  .btn {
+    background: var(--amber); color: #1B1405; border: 0; border-radius: 4px;
+    padding: 10px 18px; font-weight: 600; cursor: pointer;
+  }
+  .btn:disabled { opacity: .55; cursor: progress; }
+  .btn.quiet { background: transparent; color: var(--bone); border: 1px solid var(--rule); }
+  .statusbar {
+    display: flex; justify-content: space-between; gap: 16px; padding: 10px 2px;
+    color: var(--muted); font-size: 14px;
+  }
+  #status { color: var(--bone); }
+
+  /* Side panel */
+  .panel { display: grid; gap: 16px; }
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--rule); border-radius: 5px; overflow: hidden; }
+  .modes button {
+    background: transparent; color: var(--muted); border: 0; padding: 9px; cursor: pointer; font-weight: 600;
+  }
+  .modes button[aria-pressed="true"] { background: var(--lightbox); color: var(--bone); }
+
+  .plate {
+    background: var(--lightbox); border-radius: 6px; padding: 20px 22px 22px;
+    border-left: 3px solid var(--amber); min-height: 250px;
+  }
+  .plate.empty { border-left-color: var(--rule); }
+  .plate-head { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
+  .marker {
+    display: inline-grid; place-items: center; width: 28px; height: 28px;
+    border: 2px solid var(--bone); border-radius: 3px; color: var(--bone);
+    font-weight: 700; font-size: 14px;
+  }
+  .marker.none { border-style: dashed; border-color: var(--rule); color: var(--muted); }
+  .plate h2 { font: 600 30px/1.12 var(--serif); margin: 12px 0 10px; }
+  .plate.empty h2 { font-style: italic; font-weight: 500; color: var(--muted); font-size: 24px; }
+  .plate p { margin: 0 0 12px; max-width: 60ch; }
+  .fact { color: var(--muted); font-family: var(--serif); font-style: italic; font-size: 16px; }
+
+  .quiz { background: var(--lightbox); border-radius: 6px; padding: 18px 22px; transition: box-shadow .25s; }
+  .quiz.correct { box-shadow: inset 0 0 0 2px var(--ok); }
+  .quiz h3 { font: 500 23px/1.2 var(--serif); margin: 0 0 8px; }
+  .quiz .feedback { min-height: 1.5em; color: var(--muted); margin: 0 0 12px; }
+  .quiz .feedback.good { color: var(--ok); }
+  .quiz .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .score { color: var(--muted); font-size: 14px; }
+  .score b { color: var(--bone); }
+
+  .found h3, details summary { font-weight: 600; font-size: 15px; margin: 0 0 8px; }
+  .meter { height: 6px; background: var(--rule); border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+  .meter span { display: block; height: 100%; width: 0; background: var(--bone); transition: width .3s; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips span { border: 1px solid var(--rule); border-radius: 3px; padding: 2px 8px; font-size: 13px; color: var(--muted); }
+  .found p { margin: 0; color: var(--muted); font-size: 14px; }
+
+  details { border-top: 1px solid var(--rule); padding-top: 12px; }
+  details summary { cursor: pointer; margin: 0; }
+  details[open] summary { margin-bottom: 12px; }
+  .setting { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; }
+  .setting input[type=range] { flex: 1; accent-color: var(--amber); }
+  .setting input[type=checkbox] { accent-color: var(--amber); width: 16px; height: 16px; }
+  .help ol { margin: 0; padding-left: 20px; }
+  .help li { margin-bottom: 8px; color: var(--muted); }
+  .help li b { color: var(--bone); font-weight: 600; }
+
+  .feedback { color: var(--muted); }
+  .feedback.good { color: var(--ok); }
+  .feedback.warn { color: var(--err); }
+  .conf { color: var(--muted); font-size: 14px; margin: 0; }
+  .collect { background: var(--lightbox); border-radius: 6px; padding: 18px 22px; display: grid; gap: 14px; }
+  .collect h3 { font: 500 23px/1.2 var(--serif); margin: 0; }
+  .collect p { margin: 0; }
+  .collect .row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .collect-setup, .collect-run { display: grid; gap: 12px; }
+  .field { display: grid; gap: 4px; font-size: 14px; color: var(--muted); }
+  .field input { background: var(--film); color: var(--bone); border: 1px solid var(--rule); border-radius: 4px; padding: 7px 9px; }
+  .groups { border: 1px solid var(--rule); border-radius: 4px; padding: 8px 12px 10px; margin: 0; display: grid; gap: 4px; font-size: 14px; }
+  .groups legend { color: var(--muted); padding: 0 4px; }
+  .groups label { display: flex; gap: 8px; align-items: center; }
+  .groups input { accent-color: var(--amber); }
+  .small { color: var(--muted); font-size: 14px; }
+  .export { border-top: 1px solid var(--rule); padding-top: 12px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .export p { flex-basis: 100%; color: var(--muted); font-size: 14px; }
+  #inspectPre {
+    max-height: 340px; overflow: auto; background: var(--film); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 10px; margin: 0; font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--bone);
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bone Finder</h1>
+  <p>Point at yourself. The camera names the bone underneath.</p>
+</header>
+
+<main class="layout">
+  <section>
+    <div class="viewport" id="viewport">
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas" width="1280" height="720" aria-label="Webcam view with skeleton overlay"></canvas>
+      <div class="start" id="startOverlay">
+        <h2>Touch a part of your body to see the bone beneath it.</h2>
+        <p>Tracking runs entirely in this browser tab. No video leaves your computer.</p>
+        <button class="btn" id="startBtn">Start camera</button>
+        <p id="loadStatus" role="status"></p>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span id="status" role="status">Camera off</span>
+      <span id="fps"></span>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="modes" role="group" aria-label="Mode">
+      <button id="modeExplore" aria-pressed="true">Explore</button>
+      <button id="modeQuiz" aria-pressed="false">Quiz</button>
+      <button id="modeCollect" aria-pressed="false">Collect data</button>
+    </div>
+
+    <section class="collect" id="collectBox" hidden>
+      <div class="collect-setup" id="collectSetup">
+        <h3>Record a training session</h3>
+        <p class="small">The app prompts a participant to touch specific points and records about one second of tracking data for each. Labels on screen are hidden so they don't influence where people point.</p>
+        <label class="field">Participant code (not a name)<input id="pid" placeholder="P07" autocomplete="off"></label>
+        <label class="field">Session notes: lighting, clothing, camera distance<input id="pnotes" placeholder="window light, t-shirt, 1.8 m" autocomplete="off"></label>
+        <fieldset class="groups" id="collectGroups"><legend>Include</legend>
+          <label><input type="checkbox" value="head" checked> Head and neck</label>
+          <label><input type="checkbox" value="torso" checked> Chest, abdomen and pelvis</label>
+          <label><input type="checkbox" value="arms" checked> Arms</label>
+          <label><input type="checkbox" value="legs"> Legs (whole body must be in view)</label>
+          <label><input type="checkbox" value="hands"> Hand bones</label>
+          <label><input type="checkbox" value="none" checked> Not-touching examples</label>
+        </fieldset>
+        <label class="field">Rounds (each point is recorded once per round)<input type="number" id="reps" min="1" max="5" value="2"></label>
+        <p class="feedback warn" id="collectSetupMsg"></p>
+        <div class="row"><button class="btn" id="collectStart">Start session</button></div>
+      </div>
+      <div class="collect-run" id="collectRun" hidden>
+        <p class="small" id="trialCount">Recording 1 of 40</p>
+        <h3 id="collectPrompt">Touch your left clavicle</h3>
+        <p class="small" id="collectHint"></p>
+        <div class="meter"><span id="recMeter"></span></div>
+        <p class="feedback" id="collectState">Touch the spot and hold still.</p>
+        <div class="row">
+          <button class="btn quiet" id="redoBtn">Redo previous</button>
+          <button class="btn quiet" id="skipTrialBtn">Skip</button>
+          <button class="btn quiet" id="endBtn">End session</button>
+        </div>
+      </div>
+      <div class="export">
+        <p id="dataSummary">No samples recorded yet.</p>
+        <button class="btn" id="downloadBtn" disabled>Download CSV</button>
+        <button class="btn quiet" id="clearBtn" disabled>Clear data</button>
+      </div>
+    </section>
+
+    <section class="quiz" id="quizBox" hidden aria-live="polite">
+      <h3 id="quizPrompt">Point to your left femur</h3>
+      <p class="feedback" id="quizFeedback">Hold your fingertip on it until it registers.</p>
+      <div class="row">
+        <span class="score">Score <b id="quizScore">0</b> &nbsp; Streak <b id="quizStreak">0</b></span>
+        <button class="btn quiet" id="skipBtn">Skip</button>
+      </div>
+    </section>
+
+    <article class="plate empty" id="plate" aria-live="polite">
+      <div class="plate-head">
+        <span class="marker none" id="sideMarker" title="Side of your body">–</span>
+        <span id="regionLabel">Nothing selected</span>
+      </div>
+      <h2 id="boneName">Point at your collarbone to begin</h2>
+      <p id="boneDesc">Curl your fingers, extend your index finger, and rest the tip on your body. Hold still for a moment.</p>
+      <p class="fact" id="boneFact"></p>
+      <p class="conf" id="boneConf"></p>
+    </article>
+
+    <section class="found">
+      <h3>Bones found <span id="foundCount" style="color:var(--muted);font-weight:500">0 of 0</span></h3>
+      <div class="meter"><span id="foundMeter"></span></div>
+      <div class="chips" id="foundChips"><p>Each new bone you point at is added here.</p></div>
+    </section>
+
+    <details class="settings">
+      <summary>Settings</summary>
+      <label class="setting"><input type="checkbox" id="optMirror" checked> Mirror the camera (like a mirror)</label>
+      <label class="setting"><input type="checkbox" id="optSkeleton" checked> Show skeleton overlay</label>
+      <label class="setting"><input type="checkbox" id="optGesture" checked> Only count a pointing hand</label>
+      <label class="setting"><input type="checkbox" id="optSpeak"> Say bone names aloud</label>
+      <label class="setting">Hold time <input type="range" id="optDwell" min="0" max="900" step="50" value="300"> <span id="dwellVal">300 ms</span></label>
+    </details>
+
+    <details class="model">
+      <summary>Trained model</summary>
+      <p class="small" id="modelStatus">No model loaded. Explore and Quiz use the built-in rules.</p>
+      <label class="setting"><input type="file" id="modelFile" accept=".json,application/json"></label>
+      <label class="setting"><input type="checkbox" id="optModel" disabled> Use the trained model instead of rules</label>
+    </details>
+
+    <details id="inspectBox">
+      <summary>Inspect the model's input and output</summary>
+      <pre id="inspectPre">Start the camera and point to see live values.</pre>
+    </details>
+
+    <details class="help" open>
+      <summary>How to use</summary>
+      <ol>
+        <li><b>Frame yourself.</b> Stand or sit so your head, shoulders and hips are in view. Step back further to include your knees and feet.</li>
+        <li><b>Make a pointing hand.</b> Index finger straight, other fingers curled.</li>
+        <li><b>Touch and hold.</b> Rest the fingertip on your body. The ring around your fingertip fills, then the bone lights up and its details appear here.</li>
+        <li><b>Hand bones.</b> Hold your other hand up, palm to the camera, and point at its fingers, knuckles or wrist.</li>
+        <li><b>Quiz mode</b> asks you to find a bone. Left and right always mean your own left and right.</li>
+        <li><b>Collect data</b> records labeled examples for training. Download the CSV, train with train.py, then load model.json under Trained model.</li>
+      </ol>
+    </details>
+  </aside>
+</main>
+
+<script type="module">
+/* ------------------------------------------------------------------
+   Anatomy data. "sided" bones are reported as your own left or right.
+------------------------------------------------------------------- */
+const BONES = {
+  parietal:   { name: "Parietal bones", q: "parietal bones (top of the head)", region: "Skull", desc: "A pair of curved plates forming the top and upper sides of the cranium.", fact: "They meet along the midline at the sagittal suture." },
+  frontal:    { name: "Frontal bone", region: "Skull", desc: "Forms the forehead and the roofs of the eye sockets, protecting the frontal lobes of the brain.", fact: "At birth it is two halves; the seam between them usually fuses by about age two." },
+  temporal:   { name: "Temporal bone", sided: true, region: "Skull", desc: "Forms the side of the skull around the ear and houses the middle and inner ear.", fact: "It contains the three smallest bones in the body: the malleus, incus and stapes." },
+  nasal:      { name: "Nasal bones", q: "nasal bones (bridge of the nose)", region: "Face", desc: "Two small bones forming the bridge of the nose. The soft tip below them is cartilage, not bone.", fact: "They are the most frequently broken bones of the face." },
+  orbit:      { name: "Orbit (eye socket)", q: "eye socket (orbit)", sided: true, region: "Face", desc: "The bony cavity that holds the eye, built from seven different skull bones.", fact: "Its paper-thin floor can crack under a blow, which helps absorb force away from the eye." },
+  zygomatic:  { name: "Zygomatic bone", sided: true, region: "Face", desc: "The cheekbone. It forms the prominence of the cheek and the outer wall of the eye socket.", fact: "It links to the temporal bone to form the zygomatic arch, which you can feel in front of your ear." },
+  maxilla:    { name: "Maxilla", q: "maxilla (upper jaw)", region: "Face", desc: "The upper jaw. It holds the upper teeth and forms the floor of the nasal cavity.", fact: "It develops as two halves that fuse at the midline; incomplete fusion leads to a cleft palate." },
+  mandible:   { name: "Mandible", q: "mandible (lower jaw)", region: "Face", desc: "The lower jaw, the largest and strongest bone of the face.", fact: "It is the only skull bone that moves freely, hinging at the temporomandibular joint." },
+  cervical:   { name: "Cervical vertebrae (C1–C7)", q: "cervical vertebrae (neck)", region: "Spine", desc: "The seven vertebrae of the neck. They support the head and let it nod and turn.", fact: "C1, the atlas, carries the skull; C2, the axis, lets it rotate side to side." },
+  clavicle:   { name: "Clavicle", sided: true, region: "Shoulder girdle", desc: "The collarbone: a strut running from the top of the sternum to the tip of the shoulder.", fact: "It is one of the most commonly broken bones, often from a fall onto the shoulder." },
+  acromion:   { name: "Scapula (acromion)", q: "acromion (tip of the shoulder)", sided: true, region: "Shoulder girdle", desc: "The bony point at the top of your shoulder. It belongs to the scapula, the shoulder blade.", fact: "It meets the clavicle at the acromioclavicular (AC) joint." },
+  manubrium:  { name: "Sternum (manubrium)", q: "manubrium of the sternum", region: "Thorax", desc: "The top part of the breastbone, just below the notch at the base of your neck.", fact: "Both clavicles and the first pair of ribs attach to it." },
+  sternum:    { name: "Sternum (body)", q: "sternum (breastbone)", region: "Thorax", desc: "The breastbone: a flat bone at the front of the chest that anchors the ribs.", fact: "The ridge where the manubrium meets the body marks the level of the second rib." },
+  xiphoid:    { name: "Xiphoid process", region: "Thorax", desc: "The small lower tip of the sternum. It starts as cartilage and turns to bone with age.", fact: "It is a landmark in CPR training: compressions go on the sternum above it, never on it." },
+  trueRibs:   { name: "Ribs 1–7 (true ribs)", q: "true ribs (1–7)", sided: true, region: "Thorax", desc: "The upper seven ribs. Each joins the sternum directly through its own strip of cartilage.", fact: "Most people have 12 pairs of ribs, whatever their sex." },
+  falseRibs:  { name: "Ribs 8–10 (false ribs)", q: "false ribs (8–10)", sided: true, region: "Thorax", desc: "Their cartilage joins the rib above instead of reaching the sternum directly.", fact: "Together their cartilages form the costal margin, the lower edge of the rib cage." },
+  floatingRibs: { name: "Ribs 11–12 (floating ribs)", q: "floating ribs (11–12)", sided: true, region: "Thorax", desc: "The lowest ribs. They attach to the spine at the back but not to anything at the front.", fact: "They wrap around the side and back, so from the front you are touching their tips." },
+  abdomen:    { name: "Abdomen: no bone here", region: "Abdomen", desc: "The front of the abdomen is protected by muscle, not bone. Deep behind this spot lie the lumbar vertebrae, L1 to L5.", fact: "Lumbar vertebrae are the largest in the spine because they carry the most weight." },
+  ilium:      { name: "Ilium (iliac crest)", q: "iliac crest (top of the hip bone)", sided: true, region: "Pelvis", desc: "The large wing of the hip bone. Its upper edge, the iliac crest, is the ridge you feel at your waist.", fact: "The crest is a common site for taking bone marrow samples." },
+  pubis:      { name: "Pubis (pubic symphysis)", q: "pubic bone", region: "Pelvis", desc: "The front of the pelvis, where the two hip bones meet at a cartilage joint.", fact: "The joint loosens slightly during pregnancy to make childbirth easier." },
+  humerus:    { name: "Humerus", sided: true, region: "Arm", desc: "The long bone of the upper arm, running from shoulder to elbow.", fact: "Your 'funny bone' is the ulnar nerve passing behind a bump on the lower humerus." },
+  elbow:      { name: "Elbow (olecranon)", q: "elbow (olecranon)", sided: true, region: "Arm", desc: "Where the humerus meets the radius and ulna. The bony point of the elbow is the olecranon, part of the ulna.", fact: "You lean on your olecranons when you rest your elbows on a table." },
+  radiusUlna: { name: "Radius & ulna", q: "forearm bones (radius and ulna)", sided: true, region: "Forearm", desc: "The two forearm bones. The radius is on the thumb side, the ulna on the little-finger side.", fact: "The radius rolls around the ulna when you turn your palm up and down." },
+  carpals:    { name: "Carpal bones", q: "carpal bones (wrist)", sided: true, region: "Wrist", desc: "Eight small bones in two rows that form the wrist.", fact: "The scaphoid is the carpal most often broken, usually by falling onto an outstretched hand." },
+  metacarpals:{ name: "Metacarpal", q: "a metacarpal (palm)", sided: true, region: "Hand", desc: "Five long bones form the palm, one leading to each finger.", fact: "Your knuckles are the rounded heads of your metacarpals." },
+  proximalPhalanx: { name: "Proximal phalanx", q: "a proximal phalanx", sided: true, region: "Hand", desc: "The finger bone closest to the palm.", fact: "Each finger has three phalanges but the thumb has two, giving 14 per hand." },
+  middlePhalanx:   { name: "Middle phalanx", q: "a middle phalanx", sided: true, region: "Hand", desc: "The middle bone of a finger. The thumb doesn't have one.", fact: "The joints on either side of it are the PIP and DIP joints." },
+  distalPhalanx:   { name: "Distal phalanx", q: "a distal phalanx (fingertip)", sided: true, region: "Hand", desc: "The fingertip bone. Its flattened tip supports the nail and the pad of the finger.", fact: "The pad over it is one of the most touch-sensitive areas of skin in the body." },
+  hand:       { name: "Hand bones", sided: true, region: "Hand", desc: "Carpals, metacarpals and phalanges: 27 bones in each hand. Hold this hand up to the camera to identify individual bones.", fact: "Your two hands contain about a quarter of all the bones in your body." },
+  femur:      { name: "Femur", sided: true, region: "Leg", desc: "The thigh bone, running from hip to knee.", fact: "It is the longest and strongest bone in the body." },
+  patella:    { name: "Patella", q: "patella (kneecap)", sided: true, region: "Knee", desc: "The kneecap. It sits inside the tendon of the quadriceps and improves its leverage.", fact: "It is the largest sesamoid bone, a bone that grows inside a tendon." },
+  tibiaFibula:{ name: "Tibia & fibula", q: "shin bones (tibia and fibula)", sided: true, region: "Lower leg", desc: "The tibia (shin bone) carries your weight; the slim fibula runs alongside it on the outer side.", fact: "The front edge of the tibia lies just under the skin, which is why shin knocks hurt so much." },
+  foot:       { name: "Tarsals & metatarsals", q: "foot bones (tarsals and metatarsals)", sided: true, region: "Foot", desc: "The 7 tarsals form the ankle and heel; the 5 metatarsals form the arch of the foot.", fact: "The talus, at the top of the foot, has no muscles attached to it at all." },
+};
+const HAND_IDS = new Set(["carpals", "metacarpals", "proximalPhalanx", "middlePhalanx", "distalPhalanx"]);
+const QUIZ_POOL = Object.keys(BONES).filter(id => id !== "abdomen" && id !== "hand");
+
+/* ------------------------------------------------------------------
+   Small geometry helpers (pixel coordinates, un-mirrored image space)
+------------------------------------------------------------------- */
+const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y });
+const mul = (a, k) => ({ x: a.x * k, y: a.y * k });
+const dot = (a, b) => a.x * b.x + a.y * b.y;
+const len = a => Math.hypot(a.x, a.y);
+const norm = a => { const l = len(a) || 1; return { x: a.x / l, y: a.y / l }; };
+const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const d3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
+function segDist(p, a, b) {
+  const ab = sub(b, a);
+  const t = clamp(dot(sub(p, a), ab) / (dot(ab, ab) || 1), 0, 1);
+  return { d: len(sub(p, lerp(a, b, t))), t };
+}
+
+/* One Euro filter: smooths jitter at rest, stays responsive when moving */
+class OneEuro {
+  constructor(minCutoff = 1.5, beta = 0.015, dCutoff = 1) { Object.assign(this, { minCutoff, beta, dCutoff }); this.reset(); }
+  reset() { this.x = null; this.dx = 0; this.t = null; }
+  alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  filter(x, t) {
+    if (this.t === null) { this.t = t; this.x = x; return x; }
+    const dt = Math.max((t - this.t) / 1000, 1e-3); this.t = t;
+    const dx = (x - this.x) / dt;
+    this.dx += this.alpha(this.dCutoff, dt) * (dx - this.dx);
+    this.x += this.alpha(this.minCutoff + this.beta * Math.abs(this.dx), dt) * (x - this.x);
+    return this.x;
+  }
+}
+
+/* ------------------------------------------------------------------
+   DOM + state
+------------------------------------------------------------------- */
+const $ = s => document.querySelector(s);
+const video = $("#video"), canvas = $("#canvas"), ctx = canvas.getContext("2d");
+const settings = { mirror: true, skeleton: true, requireGesture: true, speak: false, dwell: 300, useModel: false };
+let W = 1280, H = 720;
+let poseLm = null, handLm = null;
+let P = null, handsNow = [], pointers = [], cands = [], best = null, activePtr = null;
+const filters = { L: { x: new OneEuro(), y: new OneEuro() }, R: { x: new OneEuro(), y: new OneEuro() } };
+const poseCache = new Array(33).fill(null);
+const sel = { committed: null, candKey: null, candSince: 0, pending: null, lastSeen: 0 };
+const found = new Set();
+const quiz = { active: false, target: null, score: 0, streak: 0, lock: false };
+let appMode = "explore";
+let lastPoseRaw = null, lastFeat = null, lastPred = null;
+let model = null, modelIdx = null;
+
+/* ------------------------------------------------------------------
+   Loading MediaPipe
+------------------------------------------------------------------- */
+const MP_VERSION = "0.10.14";
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
+const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+async function loadVision() {
+  try { return await import(`${MP_BASE}/vision_bundle.mjs`); }
+  catch { const m = await import(MP_BASE); return m.default ?? m; }
+}
+
+async function createLandmarkers() {
+  const { FilesetResolver, PoseLandmarker, HandLandmarker } = await loadVision();
+  const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
+  const make = async (Cls, model, extra) => {
+    const opts = d => ({ baseOptions: { modelAssetPath: model, delegate: d }, runningMode: "VIDEO", ...extra });
+    try { return await Cls.createFromOptions(fileset, opts("GPU")); }
+    catch (e) { console.warn("GPU delegate failed, using CPU", e); return await Cls.createFromOptions(fileset, opts("CPU")); }
+  };
+  poseLm = await make(PoseLandmarker, POSE_MODEL, { numPoses: 1, minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+  handLm = await make(HandLandmarker, HAND_MODEL, { numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+}
+
+$("#startBtn").addEventListener("click", async () => {
+  const btn = $("#startBtn"), msg = $("#loadStatus");
+  msg.classList.remove("error");
+  if (!navigator.mediaDevices?.getUserMedia) {
+    msg.textContent = "This page can't use the camera from here. Open it through http://localhost (see the instructions) in Chrome, Edge or Firefox.";
+    msg.classList.add("error"); return;
+  }
+  btn.disabled = true;
+  try {
+    msg.textContent = "Waiting for camera permission…";
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    msg.textContent = "Loading tracking models. The first load takes 5–20 seconds…";
+    await createLandmarkers();
+    resizeCanvas();
+    $("#startOverlay").hidden = true;
+    $("#viewport").classList.add("ready");
+    setStatus("Tracking. Stand back so your head, shoulders and hips are in view.");
+    requestAnimationFrame(loop);
+  } catch (err) {
+    console.error(err);
+    btn.disabled = false;
+    msg.classList.add("error");
+    if (err.name === "NotAllowedError") msg.textContent = "Camera access was blocked. Click the camera icon in the address bar, allow access, then press Start camera again.";
+    else if (err.name === "NotFoundError") msg.textContent = "No camera was found. Connect a webcam and press Start camera again.";
+    else if (err.name === "NotReadableError") msg.textContent = "The camera is in use by another app. Close it (Zoom, Teams, etc.) and try again.";
+    else msg.textContent = `The tracking models didn't load (${err.message || err}). Check your internet connection and open the page via http://localhost.`;
+  }
+});
+
+function resizeCanvas() {
+  W = video.videoWidth || 1280; H = video.videoHeight || 720;
+  canvas.width = W; canvas.height = H;
+}
+
+/* ------------------------------------------------------------------
+   Main loop
+------------------------------------------------------------------- */
+let lastVideoTime = -1, frames = 0, fpsT = performance.now();
+function loop() {
+  requestAnimationFrame(loop);
+  if (video.readyState < 2) return;
+  if (video.videoWidth !== W || video.videoHeight !== H) resizeCanvas();
+  if (video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  const t = performance.now();
+  const poseRes = poseLm.detectForVideo(video, t);
+  const handRes = handLm.detectForVideo(video, t);
+  processFrame(poseRes, handRes, t);
+  draw(t);
+  renderInspector(t);
+  frames++;
+  if (t - fpsT > 1000) { $("#fps").textContent = `${Math.round(frames * 1000 / (t - fpsT))} fps`; frames = 0; fpsT = t; }
+}
+
+function updatePose(lms, t) {
+  const out = new Array(33).fill(null);
+  for (let i = 0; i < 33; i++) {
+    const l = lms?.[i];
+    const c = poseCache[i];
+    if (l && (l.visibility ?? 1) > 0.5) {
+      const x = l.x * W, y = l.y * H;
+      poseCache[i] = c && t - c.t < 300 ? { x: c.x + (x - c.x) * 0.6, y: c.y + (y - c.y) * 0.6, t } : { x, y, t };
+    }
+    // Keep a landmark for up to 2 s while the pointing hand covers it
+    const cc = poseCache[i];
+    if (cc && t - cc.t < 2000) out[i] = cc;
+  }
+  return out;
+}
+
+function assignHands(handRes) {
+  const list = handRes.landmarks || [];
+  const labels = handRes.handedness || handRes.handednesses || [];
+  const hs = list.map((lm, i) => {
+    const px = lm.map(l => ({ x: l.x * W, y: l.y * H, z: l.z * W }));
+    let side;
+    const wL = P?.[15], wR = P?.[16];
+    if (wL || wR) {
+      const dL = wL ? len(sub(px[0], wL)) : Infinity, dR = wR ? len(sub(px[0], wR)) : Infinity;
+      side = dL < dR ? "L" : "R";
+    } else {
+      // MediaPipe labels assume a mirrored image; the raw webcam frame is not mirrored
+      side = labels[i]?.[0]?.categoryName === "Left" ? "R" : "L";
+    }
+    return { lm: px, raw: lm, side };
+  });
+  if (hs.length === 2 && hs[0].side === hs[1].side) hs[1].side = hs[0].side === "L" ? "R" : "L";
+  return hs;
+}
+
+function isPointing(h) {
+  const chain = d3(h[5], h[6]) + d3(h[6], h[7]) + d3(h[7], h[8]);
+  const indexStraight = d3(h[5], h[8]) > 0.8 * chain && d3(h[0], h[8]) > d3(h[0], h[6]);
+  let curled = 0;
+  for (const [mcp, tip] of [[9, 12], [13, 16], [17, 20]]) if (d3(h[0], h[tip]) < d3(h[0], h[mcp]) * 1.35) curled++;
+  return indexStraight && curled >= 2;
+}
+
+function processFrame(poseRes, handRes, t) {
+  lastPoseRaw = poseRes.landmarks?.[0] || null;
+  P = updatePose(lastPoseRaw, t);
+  handsNow = assignHands(handRes);
+  pointers = [];
+  for (const h of handsNow) {
+    h.pointing = isPointing(h.lm);
+    if (!settings.requireGesture || h.pointing) {
+      const f = filters[h.side];
+      pointers.push({ side: h.side, hand: h, tip: { x: f.x.filter(h.lm[8].x, t), y: f.y.filter(h.lm[8].y, t) } });
+    }
+  }
+  for (const s of ["L", "R"]) if (!pointers.some(p => p.side === s)) { filters[s].x.reset(); filters[s].y.reset(); }
+
+  best = null; cands = []; activePtr = pointers[0] || null; lastPred = null;
+  const useModel = settings.useModel && model;
+  for (const ptr of pointers) {
+    const other = handsNow.find(h => h !== ptr.hand) || null;
+    const list = useModel ? modelCandidates(ptr, other) : classify(ptr.tip, ptr.side, other);
+    if (list.length && (!best || list[0].score < best.score)) { best = list[0]; cands = list; activePtr = ptr; }
+  }
+  if (best && useModel && best.score > 0.5) best = null;   // model must be at least 50% sure
+  lastFeat = activePtr ? computeFeatures(activePtr, handsNow.find(h => h !== activePtr.hand) || null) : null;
+  collectStep(t);
+  updateSelection(t);
+  updateStatus();
+}
+
+/* ------------------------------------------------------------------
+   Fingertip → bone. Every candidate gets a score; lower is better and
+   anything >= 1 is out of range.
+------------------------------------------------------------------- */
+function classify(tip, ptrSide, other) {
+  const out = [];
+  const push = (id, side, score, shape, finger = null) => {
+    if (score < 1) out.push({ id, side: BONES[id].sided ? side : null, finger, score, shape, key: `${id}|${BONES[id].sided ? side : ""}|${finger || ""}` });
+  };
+
+  // The non-pointing hand, if the hand tracker sees it: individual hand bones
+  if (other) {
+    const h = other.lm, hs = len(sub(h[0], h[9])), th = hs * 0.17, w = hs * 0.1;
+    const hseg = (id, a, b, finger) => { const { d } = segDist(tip, a, b); push(id, other.side, (d / th) * 0.5, { type: "seg", a, b, w }, finger); };
+    const fingers = [["thumb", [1, 2, 3, 4]], ["index", [5, 6, 7, 8]], ["middle", [9, 10, 11, 12]], ["ring", [13, 14, 15, 16]], ["little", [17, 18, 19, 20]]];
+    for (const [fname, [a, b, c, d]] of fingers) {
+      if (fname === "thumb") {
+        hseg("metacarpals", h[a], h[b], fname); hseg("proximalPhalanx", h[b], h[c], fname); hseg("distalPhalanx", h[c], h[d], fname);
+      } else {
+        hseg("metacarpals", lerp(h[0], h[a], 0.35), lerp(h[0], h[a], 0.92), fname);
+        hseg("proximalPhalanx", h[a], h[b], fname); hseg("middlePhalanx", h[b], h[c], fname); hseg("distalPhalanx", h[c], h[d], fname);
+      }
+    }
+    const wc = lerp(h[0], h[9], 0.15), r = hs * 0.25;
+    push("carpals", other.side, (len(sub(tip, wc)) / r) * 0.5, { type: "point", c: wc, r: r * 0.7 });
+  }
+
+  if (!P || !P[11] || !P[12]) return out.sort((a, b) => a.score - b.score);
+  const Ls = P[11], Rs = P[12];
+  const sw = len(sub(Ls, Rs));          // shoulder width sets the scale
+  const segTh = sw * 0.3, bw = sw * 0.07;
+  const seg = (id, side, a, b, th = segTh, weight = 1) => {
+    if (!a || !b) return;
+    const { d } = segDist(tip, a, b);
+    push(id, side, (d / th) * weight, { type: "seg", a, b, w: bw });
+  };
+  const pt = (id, side, c, r, weight = 0.6) => {
+    if (!c) return;
+    push(id, side, (len(sub(tip, c)) / r) * weight, { type: "point", c, r: r * 0.7 });
+  };
+  const neck = mid(Ls, Rs);
+
+  // Limbs: the pointing arm is skipped, since the fingertip always lies near it
+  const sides = [["L", 11, 13, 15, 23, 25, 27, 31, 19], ["R", 12, 14, 16, 24, 26, 28, 32, 20]];
+  for (const [side, sh, el, wr, hip, kn, an, ft, idx] of sides) {
+    const S = P[sh], E = P[el], Wr = P[wr], Hp = P[hip], K = P[kn], A = P[an];
+    if (side !== ptrSide) {
+      if (S && E) seg("humerus", side, lerp(S, E, 0.12), lerp(S, E, 0.88));
+      if (E && Wr) seg("radiusUlna", side, lerp(E, Wr, 0.12), Wr);
+      pt("elbow", side, E, sw * 0.14);
+      if (!other && Wr && P[idx]) seg("hand", side, Wr, P[idx], segTh * 0.8);
+    }
+    if (S) {
+      seg("clavicle", side, lerp(neck, S, 0.12), lerp(neck, S, 0.85), sw * 0.12);
+      pt("acromion", side, S, sw * 0.14);
+    }
+    if (Hp && K) seg("femur", side, lerp(Hp, K, 0.05), lerp(Hp, K, 0.88), segTh * 1.2);
+    pt("patella", side, K, sw * 0.16);
+    if (K && A) seg("tibiaFibula", side, lerp(K, A, 0.12), A);
+    if (A && P[ft]) seg("foot", side, A, P[ft], segTh * 0.8);
+  }
+
+  // Head, using the face points of the pose model
+  const nose = P[0], eL = P[2], eR = P[5], earL = P[7], earR = P[8], mL = P[9], mR = P[10];
+  if (nose && eL && eR && mL && mR) {
+    const eyeMid = mid(eL, eR), mouthMid = mid(mL, mR);
+    const down = sub(mouthMid, eyeMid), e = len(down) || 1, dn = norm(down);
+    const lat = earL && earR ? norm(sub(earL, earR)) : norm(sub(eL, eR));
+    const half = earL && earR ? len(sub(earL, earR)) / 2 : len(sub(eL, eR)) * 1.4;
+    const rel = sub(tip, eyeMid);
+    const y = dot(rel, dn) / e, x = dot(rel, lat) / half, ax = Math.abs(x);
+    const side = x > 0 ? "L" : "R";
+    if (y > -2.8 && y < 2.0 && ax < 1.15) {
+      let id;
+      if (y < -1.4) id = "parietal";
+      else if (y < -0.3) id = ax < 0.8 ? "frontal" : "temporal";
+      else if (ax >= 0.78) id = y < 1.0 ? "temporal" : "mandible";
+      else if (y < 0.3) id = ax < 0.2 ? "nasal" : ax < 0.62 ? "orbit" : "zygomatic";
+      else if (y < 0.6 && ax < 0.18) id = "nasal";
+      else if (y < 0.75) id = ax < 0.38 ? "maxilla" : "zygomatic";
+      else if (y < 1.0) id = ax < 0.5 ? "maxilla" : "mandible";
+      else id = "mandible";
+      push(id, side, 0.45, { type: "region", c: tip, r: sw * 0.09 });
+    }
+    // Neck: from the chin down to the base of the neck
+    const chin = add(mouthMid, mul(down, 0.8));
+    seg("cervical", null, chin, lerp(chin, neck, 0.85), sw * 0.14);
+  }
+
+  // Torso: a local frame from shoulders (t = 0) to hips (t = 1)
+  const Lh = P[23], Rh = P[24];
+  if (Lh && Rh) {
+    const S = neck, Hm = mid(Lh, Rh), v = sub(Hm, S);
+    const t = dot(sub(tip, S), v) / (dot(v, v) || 1);
+    const across = norm(sub(Ls, Rs));
+    const halfW = (sw / 2) + ((len(sub(Lh, Rh)) * 1.4) / 2 - sw / 2) * clamp(t, 0, 1);
+    const s = dot(sub(tip, add(S, mul(v, t))), across) / halfW;   // + is your left
+    const as = Math.abs(s), side = s > 0 ? "L" : "R";
+    if (t >= -0.02 && t <= 1.12 && as <= 1.05) {
+      let id;
+      if (t < 0.12 && as < 0.22) id = "manubrium";
+      else if (t < 0.42 && as < 0.18) id = "sternum";
+      else if (t < 0.5 && as < 0.18) id = "xiphoid";
+      else if (t < 0.36) id = "trueRibs";
+      else if (t < 0.5 && as >= 0.62) id = "falseRibs";
+      else if (t < 0.66 && as >= 0.62) id = "floatingRibs";
+      else if (t < 0.56) id = "falseRibs";
+      else if (t < 0.78) id = "abdomen";
+      else if (as >= 0.45) id = "ilium";
+      else if (t >= 0.95) id = "pubis";
+      else id = "abdomen";
+      push(id, side, 0.72, { type: "region", c: tip, r: sw * 0.1 });
+    }
+  }
+  return out.sort((a, b) => a.score - b.score);
+}
+
+/* ------------------------------------------------------------------
+   Selection: hysteresis + dwell so labels don't flicker
+------------------------------------------------------------------- */
+function updateSelection(t) {
+  let b = best;
+  if (b && sel.committed && b.key !== sel.committed.key) {
+    const cur = cands.find(c => c.key === sel.committed.key);
+    if (cur && b.score > cur.score * 0.7) b = cur;   // new bone must be clearly better
+  }
+  if (!b) {
+    sel.candKey = null; sel.pending = null;
+    if (sel.committed && t - sel.lastSeen > 700) { sel.committed = null; renderPlate(null); }
+    return;
+  }
+  sel.lastSeen = t;
+  if (sel.committed && b.key === sel.committed.key) { sel.committed = b; sel.pending = null; sel.candKey = null; return; }
+  if (b.key !== sel.candKey) { sel.candKey = b.key; sel.candSince = t; }
+  sel.pending = b;
+  if (t - sel.candSince >= settings.dwell) commit(b);
+}
+
+function commit(c) {
+  sel.committed = c; sel.pending = null; sel.candKey = null;
+  renderPlate(c);
+  if (c.id !== "abdomen" && c.id !== "hand" && !found.has(c.id)) { found.add(c.id); renderFound(); }
+  if (settings.speak && "speechSynthesis" in window) {
+    speechSynthesis.cancel();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(fullName(c)));
+  }
+  if (quiz.active) checkQuiz(c);
+}
+
+const sideWord = s => (s === "L" ? "left" : "right");
+function fullName(c) {
+  const b = BONES[c.id];
+  let n = b.name;
+  if (c.finger) n += c.finger === "thumb" ? " of the thumb" : ` of the ${c.finger} finger`;
+  if (c.side) n += ` (${sideWord(c.side)})`;
+  return n;
+}
+
+/* ------------------------------------------------------------------
+   Panel rendering
+------------------------------------------------------------------- */
+function renderPlate(c) {
+  const plate = $("#plate"), marker = $("#sideMarker");
+  if (!c) {
+    plate.classList.add("empty");
+    marker.textContent = "–"; marker.className = "marker none";
+    $("#regionLabel").textContent = "Nothing selected";
+    $("#boneName").textContent = "Point at a part of your body";
+    $("#boneDesc").textContent = "Rest your fingertip on your body and hold still for a moment.";
+    $("#boneFact").textContent = "";
+    $("#boneConf").textContent = "";
+    return;
+  }
+  const b = BONES[c.id];
+  plate.classList.remove("empty");
+  marker.className = c.side ? "marker" : "marker none";
+  marker.textContent = c.side || "–";
+  marker.title = c.side ? `Your ${sideWord(c.side)} side` : "Midline";
+  $("#regionLabel").textContent = c.side ? `${b.region}, your ${sideWord(c.side)} side` : b.region;
+  let name = b.name;
+  if (c.finger) name += c.finger === "thumb" ? " of the thumb" : ` of the ${c.finger} finger`;
+  $("#boneName").textContent = name;
+  $("#boneDesc").textContent = b.desc;
+  $("#boneFact").textContent = b.fact;
+  $("#boneConf").textContent = c.prob != null ? `Model confidence ${Math.round(c.prob * 100)}%` : "";
+}
+
+function renderFound() {
+  $("#foundCount").textContent = `${found.size} of ${QUIZ_POOL.length}`;
+  $("#foundMeter").style.width = `${(found.size / QUIZ_POOL.length) * 100}%`;
+  const chips = $("#foundChips");
+  chips.innerHTML = "";
+  if (!found.size) { chips.innerHTML = "<p>Each new bone you point at is added here.</p>"; return; }
+  for (const id of found) { const s = document.createElement("span"); s.textContent = BONES[id].name; chips.appendChild(s); }
+}
+
+let statusText = "";
+function setStatus(txt) { if (txt !== statusText) { statusText = txt; $("#status").textContent = txt; } }
+function updateStatus() {
+  if (!P || !P[11] || !P[12]) return setStatus("Can't see your shoulders. Step back so your head, shoulders and hips are in view.");
+  if (!handsNow.length) return setStatus("Raise a hand and point at part of your body.");
+  if (!pointers.length) return setStatus("Hand seen. Straighten your index finger and curl the others to point.");
+  if (!best && !sel.committed) return setStatus("Pointing. Rest your fingertip on your body.");
+  if (sel.committed) return setStatus(`On: ${fullName(sel.committed)}`);
+  setStatus("Hold still…");
+}
+
+/* ------------------------------------------------------------------
+   Drawing
+------------------------------------------------------------------- */
+const HAND_LINKS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const BODY_LINKS = [[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[24,26],[26,28],[27,31],[28,32]];
+const X = p => ({ x: settings.mirror ? W - p.x : p.x, y: p.y });
+
+function boneStroke(a, b, w, color) {
+  const A = X(a), B = X(b);
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+  for (const q of [A, B]) { ctx.beginPath(); ctx.arc(q.x, q.y, w * 0.7, 0, Math.PI * 2); ctx.fill(); }
+}
+
+function drawSkeleton() {
+  if (!P || !P[11] || !P[12]) return;
+  const sw = len(sub(P[11], P[12])), w = sw * 0.035, col = "rgba(239,231,212,0.32)";
+  for (const [a, b] of BODY_LINKS) if (P[a] && P[b]) boneStroke(P[a], P[b], w, col);
+  const neck = mid(P[11], P[12]);
+  boneStroke(lerp(neck, P[11], 0.12), lerp(neck, P[11], 0.85), w * 0.8, col);
+  boneStroke(lerp(neck, P[12], 0.12), lerp(neck, P[12], 0.85), w * 0.8, col);
+  if (P[23] && P[24]) {
+    const hm = mid(P[23], P[24]);
+    boneStroke(neck, hm, w * 0.6, "rgba(239,231,212,0.18)");
+    boneStroke(P[23], P[24], w * 0.6, "rgba(239,231,212,0.18)");
+    // faint rib cage outline
+    const ribs = [[0.12, 0.8], [0.24, 0.9], [0.36, 0.92], [0.48, 0.85]];
+    const across = sub(P[11], P[12]);
+    ctx.strokeStyle = "rgba(239,231,212,0.14)"; ctx.lineWidth = w * 0.5;
+    for (const [t, spread] of ribs) {
+      const c = lerp(neck, hm, t), half = mul(across, spread / 2);
+      const A = X(sub(c, half)), B = X(add(c, half)), C = X(lerp(neck, hm, t + 0.07));
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.quadraticCurveTo(C.x, C.y, B.x, B.y); ctx.stroke();
+    }
+  }
+  for (const h of handsNow) {
+    const hw = len(sub(h.lm[0], h.lm[9])) * 0.05;
+    for (const [a, b] of HAND_LINKS) boneStroke(h.lm[a], h.lm[b], hw, "rgba(239,231,212,0.28)");
+  }
+}
+
+function drawShape(shape, strong) {
+  const color = strong ? "#F3B63F" : "rgba(243,182,63,0.55)";
+  ctx.save();
+  if (strong) { ctx.shadowColor = "#F3B63F"; ctx.shadowBlur = 18; }
+  if (shape.type === "seg") boneStroke(shape.a, shape.b, shape.w * (strong ? 1.25 : 0.9), color);
+  else {
+    const c = X(shape.c);
+    ctx.fillStyle = strong ? "rgba(243,182,63,0.35)" : "rgba(243,182,63,0.15)";
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(c.x, c.y, shape.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function draw(t) {
+  ctx.save();
+  if (settings.mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(video, 0, 0, W, H);
+  ctx.restore();
+  ctx.fillStyle = "rgba(14,29,39,0.35)"; ctx.fillRect(0, 0, W, H);
+
+  if (settings.skeleton) drawSkeleton();
+  const showSel = appMode !== "collect";   // hide answers while collecting, so they can't bias the data
+  if (showSel && sel.pending) drawShape(sel.pending.shape, false);
+  if (showSel && sel.committed) drawShape(sel.committed.shape, true);
+
+  const k = W / (canvas.getBoundingClientRect().width || W);   // keep UI sizes constant on screen
+  if (activePtr) {
+    const p = X(activePtr.tip), r = 11 * k;
+    ctx.lineWidth = 3 * k;
+    ctx.strokeStyle = "rgba(239,231,212,0.5)";
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
+    let prog = sel.pending ? clamp((t - sel.candSince) / (settings.dwell || 1), 0, 1) : (sel.committed ? 1 : 0);
+    if (!showSel) prog = 0;
+    if (prog > 0) {
+      ctx.strokeStyle = "#F3B63F";
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); ctx.stroke();
+    }
+    if (showSel && sel.committed) {
+      const label = fullName(sel.committed);
+      ctx.font = `600 ${17 * k}px "Public Sans", system-ui, sans-serif`;
+      const tw = ctx.measureText(label).width, pad = 8 * k, bh = 28 * k;
+      let lx = p.x + 18 * k, ly = p.y - 18 * k - bh;
+      if (lx + tw + pad * 2 > W) lx = p.x - 18 * k - tw - pad * 2;
+      if (ly < 0) ly = p.y + 18 * k;
+      ctx.fillStyle = "rgba(14,29,39,0.88)";
+      ctx.beginPath(); ctx.roundRect ? ctx.roundRect(lx, ly, tw + pad * 2, bh, 4 * k) : ctx.rect(lx, ly, tw + pad * 2, bh); ctx.fill();
+      ctx.fillStyle = "#EFE7D4"; ctx.textBaseline = "middle";
+      ctx.fillText(label, lx + pad, ly + bh / 2);
+    }
+  }
+  if (appMode === "collect" && collect.running) {
+    const tr = collect.trials[collect.idx], bh = 54 * k;
+    ctx.fillStyle = "rgba(14,29,39,0.86)"; ctx.fillRect(0, 0, W, bh);
+    ctx.fillStyle = collect.state === "recording" ? "#71C9A0" : "#EFE7D4";
+    ctx.font = `500 ${24 * k}px Spectral, Georgia, serif`; ctx.textBaseline = "middle";
+    ctx.fillText(trialPrompt(tr), 16 * k, bh / 2);
+    const need = tr.none ? REC_FRAMES_NONE : REC_FRAMES;
+    const prog = collect.state === "done" ? 1 : collect.state === "recording" ? collect.buf.length / need : 0;
+    ctx.fillStyle = "#71C9A0"; ctx.fillRect(0, bh - 4 * k, W * prog, 4 * k);
+  }
+}
+
+/* ------------------------------------------------------------------
+   Quiz
+------------------------------------------------------------------- */
+function quizPrompt(target) {
+  const b = BONES[target.id], q = b.q || b.name.toLowerCase();
+  if (HAND_IDS.has(target.id)) return `Point to ${q} on your ${sideWord(target.side)} hand`;
+  return `Point to your ${target.side ? sideWord(target.side) + " " : ""}${q}`;
+}
+function nextQuestion() {
+  let id;
+  do { id = QUIZ_POOL[Math.floor(Math.random() * QUIZ_POOL.length)]; } while (quiz.target && id === quiz.target.id && QUIZ_POOL.length > 1);
+  quiz.target = { id, side: BONES[id].sided ? (Math.random() < 0.5 ? "L" : "R") : null };
+  quiz.lock = false;
+  $("#quizPrompt").textContent = quizPrompt(quiz.target);
+  const fb = $("#quizFeedback");
+  fb.className = "feedback";
+  fb.textContent = HAND_IDS.has(id) ? "Hold that hand up, palm to the camera, and point with the other." : "Hold your fingertip on it until it registers.";
+  $("#quizBox").classList.remove("correct");
+}
+function checkQuiz(c) {
+  if (quiz.lock || !quiz.target) return;
+  const ok = c.id === quiz.target.id && (!BONES[c.id].sided || c.side === quiz.target.side);
+  const fb = $("#quizFeedback");
+  if (ok) {
+    quiz.lock = true; quiz.score++; quiz.streak++;
+    fb.className = "feedback good"; fb.textContent = "Correct. Next one coming up.";
+    $("#quizBox").classList.add("correct");
+    setTimeout(nextQuestion, 1500);
+  } else {
+    fb.className = "feedback";
+    fb.textContent = `That's your ${fullName(c).toLowerCase()}. Keep looking.`;
+  }
+  $("#quizScore").textContent = quiz.score; $("#quizStreak").textContent = quiz.streak;
+}
+function setMode(mode) {
+  appMode = mode;
+  quiz.active = mode === "quiz";
+  for (const [id, m] of [["#modeExplore", "explore"], ["#modeQuiz", "quiz"], ["#modeCollect", "collect"]]) $(id).setAttribute("aria-pressed", String(m === mode));
+  $("#quizBox").hidden = mode !== "quiz";
+  $("#collectBox").hidden = mode !== "collect";
+  $("#plate").hidden = mode === "collect";
+  if (mode === "quiz") { quiz.score = 0; quiz.streak = 0; $("#quizScore").textContent = 0; $("#quizStreak").textContent = 0; nextQuestion(); }
+  if (mode !== "collect" && collect.running) endSession("Session stopped when you left Collect mode. Recorded data is kept.");
+}
+$("#modeExplore").onclick = () => setMode("explore");
+$("#modeQuiz").onclick = () => setMode("quiz");
+$("#modeCollect").onclick = () => setMode("collect");
+$("#skipBtn").onclick = () => { quiz.streak = 0; $("#quizStreak").textContent = 0; nextQuestion(); };
+
+/* ------------------------------------------------------------------
+   FEATURES: the numbers the model sees. One vector per video frame.
+   Everything is expressed in a body frame: origin between the shoulders,
+   x toward YOUR left shoulder, y down the body, 1 unit = shoulder width.
+   This same function is used when collecting and when predicting, so
+   training data and live input are always computed identically.
+------------------------------------------------------------------- */
+const FEAT_LM = [["nose", 0], ["eyeL", 2], ["eyeR", 5], ["earL", 7], ["earR", 8], ["mouthL", 9], ["mouthR", 10],
+  ["shoulderL", 11], ["shoulderR", 12], ["elbowL", 13], ["elbowR", 14], ["wristL", 15], ["wristR", 16],
+  ["hipL", 23], ["hipR", 24], ["kneeL", 25], ["kneeR", 26], ["ankleL", 27], ["ankleR", 28]];
+const FEATURE_NAMES = [
+  "f_tip_x", "f_tip_y",
+  ...FEAT_LM.flatMap(([n]) => [`f_rel_${n}_x`, `f_rel_${n}_y`]),
+  ...FEAT_LM.map(([n]) => `f_has_${n}`),
+  "f_ptr_left", "f_dir_x", "f_dir_y",
+  "f_oh_present", "f_oh_x", "f_oh_y",
+  ...Array.from({ length: 21 }, (_, i) => `f_oh_d${i}`),
+];
+
+function computeFeatures(ptr, other) {
+  if (!P || !P[11] || !P[12]) return null;
+  const Ls = P[11], Rs = P[12], O = mid(Ls, Rs), s = len(sub(Ls, Rs)) || 1;
+  const ex = norm(sub(Ls, Rs)), ey = { x: -ex.y, y: ex.x };
+  const B = p => { const d = sub(p, O); return { x: dot(d, ex) / s, y: dot(d, ey) / s }; };
+  const tip = B(ptr.tip);
+  const f = [tip.x, tip.y];
+  const has = [];
+  for (const [, i] of FEAT_LM) {
+    if (P[i]) { const q = B(P[i]); f.push(tip.x - q.x, tip.y - q.y); has.push(1); }
+    else { f.push(0, 0); has.push(0); }
+  }
+  f.push(...has);
+  f.push(ptr.side === "L" ? 1 : 0);
+  const dir = norm(sub(B(ptr.hand.lm[8]), B(ptr.hand.lm[6])));
+  f.push(dir.x, dir.y);
+  if (other) {
+    const h = other.lm.map(B), w = h[0], hs = len(sub(h[9], w)) || 1e-3;
+    const u = norm(sub(h[9], w)), perp = { x: -u.y, y: u.x }, d = sub(tip, w);
+    f.push(1, clamp(dot(d, perp) / hs, -5, 5), clamp(dot(d, u) / hs, -5, 5));
+    for (let i = 0; i < 21; i++) f.push(Math.min(len(sub(tip, h[i])) / hs, 5));
+  } else {
+    f.push(0, 0, 0);
+    for (let i = 0; i < 21; i++) f.push(5);
+  }
+  return f;
+}
+
+/* ------------------------------------------------------------------
+   COLLECT MODE: guided prompts → labeled rows
+------------------------------------------------------------------- */
+const TOUCH_POINTS = [
+  { id: "parietal", group: "head", hint: "The very top of your head." },
+  { id: "frontal", group: "head", hint: "The middle of your forehead." },
+  { id: "temporal", group: "head", hint: "Your temple, just above and in front of the ear." },
+  { id: "nasal", group: "head", hint: "The bony bridge of your nose, between the eyes." },
+  { id: "orbit", group: "head", hint: "The bony rim just below your eye." },
+  { id: "zygomatic", group: "head", hint: "Your cheekbone, below the outer corner of the eye." },
+  { id: "maxilla", group: "head", hint: "Just above your upper lip." },
+  { id: "mandible", group: "head", hint: "The point of your chin." },
+  { id: "cervical", group: "head", hint: "The middle of your neck. The vertebrae lie behind this spot." },
+  { id: "clavicle", group: "torso", hint: "The middle of your collarbone." },
+  { id: "acromion", group: "torso", hint: "The bony point on top of your shoulder." },
+  { id: "manubrium", group: "torso", hint: "Just below the notch at the base of your neck." },
+  { id: "sternum", group: "torso", hint: "The center of your breastbone." },
+  { id: "xiphoid", group: "torso", hint: "The bottom tip of your breastbone." },
+  { id: "trueRibs", group: "torso", hint: "Your upper chest, about a hand's width from the midline." },
+  { id: "falseRibs", group: "torso", hint: "The lower front edge of your rib cage." },
+  { id: "floatingRibs", group: "torso", hint: "Your side, at the bottom of the rib cage." },
+  { id: "abdomen", group: "torso", hint: "Just above your belly button." },
+  { id: "ilium", group: "torso", hint: "The bony ridge of your hip, at the waist." },
+  { id: "pubis", group: "torso", hint: "The lowest part of your abdomen, in the center." },
+  { id: "humerus", group: "arms", opposite: true, hint: "The middle of your upper arm." },
+  { id: "elbow", group: "arms", opposite: true, hint: "The bony point of your elbow." },
+  { id: "radiusUlna", group: "arms", opposite: true, hint: "The middle of your forearm." },
+  { id: "femur", group: "legs", hint: "The middle of your thigh." },
+  { id: "patella", group: "legs", hint: "Your kneecap." },
+  { id: "tibiaFibula", group: "legs", hint: "The middle of your shin." },
+  { id: "foot", group: "legs", hint: "The top of your foot." },
+  { id: "carpals", group: "hands", opposite: true, hint: "The wrist, just below the palm." },
+  { id: "metacarpals", group: "hands", opposite: true, hint: "The middle of the palm." },
+  { id: "proximalPhalanx", group: "hands", opposite: true, hint: "The index finger, the segment nearest the palm." },
+  { id: "middlePhalanx", group: "hands", opposite: true, hint: "The index finger, the middle segment." },
+  { id: "distalPhalanx", group: "hands", opposite: true, hint: "The tip of the index finger." },
+  { id: "none", group: "none", none: true, hint: "Point at the empty air in front of you, not touching your body. Move your hand slowly." },
+  { id: "none", group: "none", none: true, hint: "Point at the empty air beside your body. Move your hand slowly." },
+];
+const REC_FRAMES = 30, REC_FRAMES_NONE = 45;
+const META_COLS = ["participant", "session", "trial_id", "label", "bone", "side", "frame", "t_ms", "ptr_side", "gesture", "tip_speed", "notes"];
+const RAW_COLS = [
+  ...Array.from({ length: 33 }, (_, i) => ["x", "y", "z", "v"].map(k => `pose${i}_${k}`)).flat(),
+  ...["ptr", "oth"].flatMap(h => Array.from({ length: 21 }, (_, i) => ["x", "y", "z"].map(k => `${h}${i}_${k}`)).flat()),
+];
+const collect = { running: false, trials: [], idx: 0, state: "waiting", since: 0, lastTip: null, lastT: 0, buf: [], miss: 0,
+  trialSeq: 0, prev: null, doneAt: 0, pid: "", notes: "", session: "" };
+let dataRows = [], downloaded = true;
+
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+function buildTrials(groups, reps) {
+  const base = [];
+  for (const tp of TOUCH_POINTS) {
+    if (!groups.has(tp.group)) continue;
+    const sides = !tp.none && BONES[tp.id].sided ? ["L", "R"] : [null];
+    for (const side of sides) base.push({ ...tp, side,
+      requirePtr: tp.opposite ? (side === "L" ? "R" : "L") : null,
+      label: tp.none ? "none" : tp.id + (side ? "_" + side : "") });
+  }
+  const out = [];
+  for (let r = 0; r < reps; r++) out.push(...shuffle(base.map(x => ({ ...x }))));
+  return out;
+}
+
+function trialPrompt(tr) {
+  if (tr.none) return "Point at the air, not at your body";
+  const b = BONES[tr.id], q = b.q || b.name.toLowerCase();
+  if (tr.group === "hands") return `Touch ${q} on your ${sideWord(tr.side)} hand`;
+  return `Touch your ${tr.side ? sideWord(tr.side) + " " : ""}${q}`;
+}
+function trialHint(tr) {
+  let h = tr.hint;
+  if (tr.group === "hands") h = `Hold your ${sideWord(tr.side)} hand up, palm to the camera. ${h}`;
+  if (tr.requirePtr) h += ` Point with your ${sideWord(tr.requirePtr)} hand.`;
+  return h;
+}
+
+let collectStateText = "";
+function setCollectState(txt, cls = "") {
+  if (txt === collectStateText) return;
+  collectStateText = txt;
+  const el = $("#collectState"); el.textContent = txt; el.className = `feedback ${cls}`;
+}
+
+$("#collectStart").onclick = () => {
+  const msg = $("#collectSetupMsg");
+  const pid = $("#pid").value.trim().replace(/[^A-Za-z0-9_-]/g, "");
+  if (!poseLm) { msg.textContent = "Start the camera first."; return; }
+  if (!pid) { msg.textContent = "Enter a participant code. Use a code like P07, not a real name."; $("#pid").focus(); return; }
+  const groups = new Set([...document.querySelectorAll("#collectGroups input:checked")].map(i => i.value));
+  if (!groups.size) { msg.textContent = "Choose at least one body area to include."; return; }
+  const reps = clamp(Math.round(+$("#reps").value) || 1, 1, 5);
+  msg.textContent = "";
+  Object.assign(collect, { running: true, trials: buildTrials(groups, reps), idx: 0, pid, prev: null,
+    notes: $("#pnotes").value.replace(/[",\n\r]/g, " ").trim(), session: `${pid}-${Date.now().toString(36)}` });
+  $("#collectSetup").hidden = true; $("#collectRun").hidden = false;
+  beginTrial();
+};
+
+function beginTrial() {
+  Object.assign(collect, { state: "waiting", since: 0, buf: [], lastTip: null, miss: 0 });
+  const tr = collect.trials[collect.idx];
+  $("#trialCount").textContent = `Recording ${collect.idx + 1} of ${collect.trials.length}`;
+  $("#collectPrompt").textContent = trialPrompt(tr);
+  $("#collectHint").textContent = trialHint(tr);
+  $("#recMeter").style.width = "0%";
+  setCollectState(tr.none ? "Point at the air to start recording." : "Touch the spot and hold still.");
+  if (settings.speak && "speechSynthesis" in window) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(trialPrompt(tr))); }
+}
+function endSession(msg) {
+  collect.running = false;
+  $("#collectRun").hidden = true; $("#collectSetup").hidden = false;
+  $("#collectSetupMsg").textContent = msg || "";
+}
+function advanceTrial() {
+  collect.idx++;
+  if (collect.idx >= collect.trials.length) endSession("Session complete. Download the CSV below.");
+  else beginTrial();
+}
+function abortOrWait(msg) {
+  if (collect.state === "recording" && ++collect.miss <= 5) return;   // tolerate brief tracking dropouts
+  if (collect.state === "recording") { collect.buf = []; $("#recMeter").style.width = "0%"; }
+  Object.assign(collect, { state: "waiting", since: 0, lastTip: null, miss: 0 });
+  setCollectState(msg);
+}
+
+function collectStep(t) {
+  if (!collect.running || appMode !== "collect") return;
+  const tr = collect.trials[collect.idx];
+  if (collect.state === "done") { if (t - collect.doneAt > 800) advanceTrial(); return; }
+  if (!P || !P[11] || !P[12]) return abortOrWait("Step back so both shoulders are in view.");
+  const ptr = pointers.find(p => !tr.requirePtr || p.side === tr.requirePtr);
+  if (!ptr) return abortOrWait(pointers.length && tr.requirePtr ? `Point with your ${sideWord(tr.requirePtr)} hand.` : "Waiting for a pointing hand…");
+  const other = handsNow.find(h => h !== ptr.hand) || null;
+  if (tr.group === "hands" && !other) return abortOrWait(`Hold your ${sideWord(tr.side)} hand up so the camera can see it.`);
+
+  const sw = len(sub(P[11], P[12]));
+  const dt = Math.max((t - collect.lastT) / 1000, 1e-3);
+  const speed = collect.lastTip ? len(sub(ptr.tip, collect.lastTip)) / sw / dt : 0;   // shoulder widths per second
+  collect.lastTip = ptr.tip; collect.lastT = t;
+
+  if (collect.state === "waiting") {
+    if (!tr.none && speed > 0.35) { collect.since = 0; setCollectState("Hold still…"); return; }
+    if (!collect.since) collect.since = t;
+    if (t - collect.since > (tr.none ? 300 : 450)) { collect.state = "recording"; collect.buf = []; setCollectState("Recording…", "good"); }
+    return;
+  }
+  if (!tr.none && speed > 1.0) {
+    Object.assign(collect, { state: "waiting", since: 0, buf: [] });
+    $("#recMeter").style.width = "0%";
+    setCollectState("Moved too much. Touch the spot and hold still again.", "warn");
+    return;
+  }
+  const f = computeFeatures(ptr, other);
+  if (!f) return;
+  collect.miss = 0;
+  collect.buf.push(makeRow(tr, ptr, other, f, t, collect.buf.length, speed));
+  const need = tr.none ? REC_FRAMES_NONE : REC_FRAMES;
+  $("#recMeter").style.width = `${(collect.buf.length / need) * 100}%`;
+  if (collect.buf.length >= need) {
+    dataRows.push(...collect.buf); downloaded = false;
+    collect.prev = { trialId: collect.trialSeq, idx: collect.idx };
+    collect.trialSeq++;
+    collect.state = "done"; collect.doneAt = t;
+    setCollectState(`Saved ${need} samples.`, "good");
+    renderDataSummary();
+  }
+}
+
+function makeRow(tr, ptr, other, f, t, frame, speed) {
+  const raw = [];
+  for (let i = 0; i < 33; i++) { const l = lastPoseRaw?.[i]; raw.push(l ? l.x : "", l ? l.y : "", l ? l.z : "", l ? (l.visibility ?? "") : ""); }
+  for (const h of [ptr.hand, other]) for (let i = 0; i < 21; i++) { const l = h?.raw?.[i]; raw.push(l ? l.x : "", l ? l.y : "", l ? l.z : ""); }
+  return [collect.pid, collect.session, collect.trialSeq, tr.label, tr.none ? "none" : tr.id, tr.side || "", frame,
+    Math.round(t), ptr.side, ptr.hand.pointing ? 1 : 0, speed, collect.notes, ...f, ...raw];
+}
+
+$("#redoBtn").onclick = () => {
+  const p = collect.prev; if (!p) return;
+  dataRows = dataRows.filter(r => !(r[1] === collect.session && r[2] === p.trialId));
+  collect.prev = null; collect.idx = p.idx;
+  renderDataSummary(); beginTrial();
+};
+$("#skipTrialBtn").onclick = () => advanceTrial();
+$("#endBtn").onclick = () => endSession("Session ended early. Recorded data is kept.");
+
+function toCSV() {
+  const fmt = v => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(5)) : String(v);
+  return [META_COLS, FEATURE_NAMES, RAW_COLS].flat().join(",") + "\n" + dataRows.map(r => r.map(fmt).join(",")).join("\n") + "\n";
+}
+$("#downloadBtn").onclick = () => {
+  const a = document.createElement("a");
+  const pids = [...new Set(dataRows.map(r => r[0]))].join("_");
+  a.href = URL.createObjectURL(new Blob([toCSV()], { type: "text/csv" }));
+  a.download = `bonefinder_${pids}_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  downloaded = true; renderDataSummary();
+};
+$("#clearBtn").onclick = () => {
+  if (!downloaded && !confirm("Delete recorded samples that haven't been downloaded?")) return;
+  dataRows = []; downloaded = true; collect.prev = null; renderDataSummary();
+};
+window.addEventListener("beforeunload", e => { if (!downloaded && dataRows.length) { e.preventDefault(); e.returnValue = ""; } });
+
+function renderDataSummary() {
+  const n = dataRows.length;
+  const recs = new Set(dataRows.map(r => r[1] + "#" + r[2])).size, people = new Set(dataRows.map(r => r[0])).size;
+  $("#dataSummary").textContent = n
+    ? `${n} samples from ${recs} recordings, ${people} participant${people === 1 ? "" : "s"}. ${downloaded ? "Downloaded." : "Not downloaded yet."}`
+    : "No samples recorded yet.";
+  $("#downloadBtn").disabled = !n; $("#clearBtn").disabled = !n;
+}
+
+/* ------------------------------------------------------------------
+   TRAINED MODEL: a small neural network exported by train.py
+------------------------------------------------------------------- */
+function mlpPredict(x) {
+  let a = x.map((v, i) => (v - model.mean[i]) / model.scale[i]);
+  const act = { relu: v => Math.max(0, v), tanh: Math.tanh, logistic: v => 1 / (1 + Math.exp(-v)), identity: v => v }[model.activation] || (v => Math.max(0, v));
+  model.layers.forEach((L, li) => {
+    const out = L.b.slice();
+    for (let i = 0; i < a.length; i++) { const ai = a[i]; if (ai === 0) continue; const row = L.W[i]; for (let j = 0; j < out.length; j++) out[j] += ai * row[j]; }
+    a = li < model.layers.length - 1 ? out.map(act) : out;
+  });
+  if (model.out_activation === "logistic") { const p = 1 / (1 + Math.exp(-a[0])); return [1 - p, p]; }
+  const m = Math.max(...a), e = a.map(v => Math.exp(v - m)), sum = e.reduce((p, q) => p + q, 0);
+  return e.map(v => v / sum);
+}
+function parseLabel(label) {
+  if (BONES[label]) return { id: label, side: null };
+  const m = /^(.+)_(L|R)$/.exec(label);
+  return m && BONES[m[1]] ? { id: m[1], side: m[2] } : null;
+}
+function modelCandidates(ptr, other) {
+  const f = computeFeatures(ptr, other);
+  if (!f) return [];
+  const probs = mlpPredict(modelIdx.map(i => f[i]));
+  const ranked = probs.map((p, i) => ({ label: String(model.classes[i]), p })).sort((a, b) => b.p - a.p);
+  lastPred = ranked.slice(0, 5);
+  const sw = len(sub(P[11], P[12]));
+  const out = [];
+  for (const r of ranked) {
+    if (r.p < 0.15) break;
+    const lab = parseLabel(r.label);
+    if (!lab) continue;                      // "none" is not a bone
+    const sided = BONES[lab.id].sided;
+    out.push({ id: lab.id, side: sided ? lab.side : null, finger: null, score: 1 - r.p, prob: r.p,
+      shape: { type: "region", c: ptr.tip, r: sw * 0.1 }, key: `${lab.id}|${sided ? lab.side : ""}|` });
+  }
+  return out;
+}
+$("#modelFile").onchange = async e => {
+  const file = e.target.files?.[0]; if (!file) return;
+  const st = $("#modelStatus");
+  try {
+    const m = JSON.parse(await file.text());
+    if (!Array.isArray(m.feature_names) || !Array.isArray(m.layers)) throw new Error("it isn't a model.json from train.py");
+    const idx = m.feature_names.map(n => FEATURE_NAMES.indexOf(n));
+    if (idx.some(i => i < 0)) throw new Error("its features don't match this version of the app");
+    model = m; modelIdx = idx;
+    $("#optModel").disabled = false; $("#optModel").checked = true; settings.useModel = true;
+    const acc = m.meta?.test_accuracy_frames;
+    st.textContent = `Loaded: ${m.classes.length} classes, ${m.meta?.n_participants ?? "?"} participants.` +
+      (acc != null ? ` Accuracy on held-out ${m.meta.split_by}: ${(acc * 100).toFixed(1)}%.` : "");
+  } catch (err) { st.textContent = `Couldn't load that file: ${err.message}.`; }
+};
+
+/* ------------------------------------------------------------------
+   INSPECTOR: the "black box" input and output, live
+------------------------------------------------------------------- */
+let lastInspect = 0;
+function renderInspector(t) {
+  if (!$("#inspectBox").open || t - lastInspect < 250) return;
+  lastInspect = t;
+  const L = ["OUTPUT"];
+  if (settings.useModel && model) {
+    if (lastPred) for (const r of lastPred) L.push(`  ${r.label.padEnd(20)} ${"█".repeat(Math.round(r.p * 20)).padEnd(20, "·")} ${(r.p * 100).toFixed(1).padStart(5)}%`);
+    else L.push("  (no pointing hand)");
+  } else L.push(`  Rules: ${sel.committed ? fullName(sel.committed) : "nothing selected"}`, "  Load a trained model to see probabilities.");
+  L.push("", `INPUT (${FEATURE_NAMES.length} numbers)`);
+  if (lastFeat) FEATURE_NAMES.forEach((n, i) => L.push(`  ${n.padEnd(18)} ${lastFeat[i].toFixed(3).padStart(8)}`));
+  else L.push("  (needs a pointing hand and both shoulders in view)");
+  $("#inspectPre").textContent = L.join("\n");
+}
+
+/* ------------------------------------------------------------------
+   Settings
+------------------------------------------------------------------- */
+$("#optMirror").onchange = e => (settings.mirror = e.target.checked);
+$("#optSkeleton").onchange = e => (settings.skeleton = e.target.checked);
+$("#optGesture").onchange = e => (settings.requireGesture = e.target.checked);
+$("#optSpeak").onchange = e => (settings.speak = e.target.checked);
+$("#optDwell").oninput = e => { settings.dwell = +e.target.value; $("#dwellVal").textContent = `${settings.dwell} ms`; };
+$("#optModel").onchange = e => (settings.useModel = e.target.checked && !!model);
+renderFound();
+renderDataSummary();
+</script>
+</body>
+</html>
