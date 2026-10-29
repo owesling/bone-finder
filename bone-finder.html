@@ -248,7 +248,8 @@
     <details class="settings">
       <summary>Settings</summary>
       <label class="setting"><input type="checkbox" id="optMirror" checked> Mirror the camera (like a mirror)</label>
-      <label class="setting"><input type="checkbox" id="optSkeleton" checked> Show skeleton overlay</label>
+      <label class="setting">Skeleton <input type="range" id="optSkeleton" min="0" max="2" step="1" value="2"> <span id="skelModeVal">3D</span></label>
+      <p class="small" id="skelStatus">Looking for skeleton.glb…</p>
       <label class="setting"><input type="checkbox" id="optGesture" checked> Only count a pointing hand</label>
       <label class="setting"><input type="checkbox" id="optSpeak"> Say bone names aloud</label>
       <label class="setting">Hold time <input type="range" id="optDwell" min="0" max="900" step="50" value="300"> <span id="dwellVal">300 ms</span></label>
@@ -280,6 +281,7 @@
   </aside>
 </main>
 
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
 <script type="module">
 /* ------------------------------------------------------------------
    Anatomy data. "sided" bones are reported as your own left or right.
@@ -361,7 +363,7 @@ class OneEuro {
 ------------------------------------------------------------------- */
 const $ = s => document.querySelector(s);
 const video = $("#video"), canvas = $("#canvas"), ctx = canvas.getContext("2d");
-const settings = { mirror: true, skeleton: true, requireGesture: true, speak: false, dwell: 300, useModel: false };
+const settings = { mirror: true, skeleton: 2 /* 0 none, 1 2D, 2 3D */, requireGesture: true, speak: false, dwell: 300, useModel: false };
 let W = 1280, H = 720;
 let poseLm = null, handLm = null;
 let P = null, handsNow = [], pointers = [], cands = [], best = null, activePtr = null;
@@ -371,7 +373,7 @@ const sel = { committed: null, candKey: null, candSince: 0, pending: null, lastS
 const found = new Set();
 const quiz = { active: false, target: null, score: 0, streak: 0, lock: false };
 let appMode = "explore";
-let lastPoseRaw = null, lastFeat = null, lastPred = null;
+let lastPoseRaw = null, lastWorld = null, lastFeat = null, lastPred = null;
 let model = null, modelIdx = null;
 
 /* ------------------------------------------------------------------
@@ -491,6 +493,61 @@ function assignHands(handRes) {
   return hs;
 }
 
+/* ------------------------------------------------------------------
+   Body geometry shared by classify() and the skeleton overlay, so the
+   bones you see are the same regions you hit when pointing.
+------------------------------------------------------------------- */
+const FINGERS = [["thumb", [1, 2, 3, 4]], ["index", [5, 6, 7, 8]], ["middle", [9, 10, 11, 12]], ["ring", [13, 14, 15, 16]], ["little", [17, 18, 19, 20]]];
+function handBones(h) {
+  const lm = h.lm, out = [];
+  const add = (id, a, b, finger) => out.push({ id, a, b, finger });
+  for (const [fname, [a, b, c, d]] of FINGERS) {
+    if (fname === "thumb") {
+      add("metacarpals", lm[a], lm[b], fname); add("proximalPhalanx", lm[b], lm[c], fname); add("distalPhalanx", lm[c], lm[d], fname);
+    } else {
+      add("metacarpals", lerp(lm[0], lm[a], 0.35), lerp(lm[0], lm[a], 0.92), fname);
+      add("proximalPhalanx", lm[a], lm[b], fname); add("middlePhalanx", lm[b], lm[c], fname); add("distalPhalanx", lm[c], lm[d], fname);
+    }
+  }
+  return out;
+}
+
+function limbGeom(side) {
+  const [sh, el, wr, hip, kn, an, ft, idx] = side === "L" ? [11, 13, 15, 23, 25, 27, 31, 19] : [12, 14, 16, 24, 26, 28, 32, 20];
+  const S = P[sh], E = P[el], Wr = P[wr], Hp = P[hip], K = P[kn], A = P[an], F = P[ft], I = P[idx];
+  const neck = P[11] && P[12] ? mid(P[11], P[12]) : null;
+  return {
+    S, E, Wr, Hp, K, A, I,
+    clavicle: S && neck ? [lerp(neck, S, 0.12), lerp(neck, S, 0.85)] : null,
+    humerus: S && E ? [lerp(S, E, 0.12), lerp(S, E, 0.88)] : null,
+    forearm: E && Wr ? [lerp(E, Wr, 0.12), Wr] : null,
+    femur: Hp && K ? [lerp(Hp, K, 0.05), lerp(Hp, K, 0.88)] : null,
+    shin: K && A ? [lerp(K, A, 0.12), A] : null,
+    foot: A && F ? [A, F] : null,
+  };
+}
+
+// Head frame: x is -1..1 across the ears (+ is your left), y is in eye-to-mouth units below the eyes
+function headFrame() {
+  const eL = P[2], eR = P[5], earL = P[7], earR = P[8], mL = P[9], mR = P[10];
+  if (!(P[0] && eL && eR && mL && mR)) return null;
+  const eyeMid = mid(eL, eR), mouthMid = mid(mL, mR);
+  const down = sub(mouthMid, eyeMid), e = len(down) || 1, dn = norm(down);
+  const lat = earL && earR ? norm(sub(earL, earR)) : norm(sub(eL, eR));
+  const half = earL && earR ? len(sub(earL, earR)) / 2 : len(sub(eL, eR)) * 1.4;
+  return { eyeMid, mouthMid, down, e, dn, lat, half, at: (x, y) => add(eyeMid, add(mul(lat, x * half), mul(dn, y * e))) };
+}
+
+// Torso frame: t runs 0 (shoulders) to 1 (hips), s is -1..1 across the body (+ is your left)
+function torsoFrame() {
+  const Ls = P[11], Rs = P[12], Lh = P[23], Rh = P[24];
+  if (!(Ls && Rs && Lh && Rh)) return null;
+  const S = mid(Ls, Rs), Hm = mid(Lh, Rh), v = sub(Hm, S);
+  const across = norm(sub(Ls, Rs)), sw = len(sub(Ls, Rs));
+  const halfW = t => (sw / 2) + ((len(sub(Lh, Rh)) * 1.4) / 2 - sw / 2) * clamp(t, 0, 1);
+  return { S, Hm, v, across, halfW, at: (t, s) => add(add(S, mul(v, t)), mul(across, s * halfW(t))) };
+}
+
 function isPointing(h) {
   const chain = d3(h[5], h[6]) + d3(h[6], h[7]) + d3(h[7], h[8]);
   const indexStraight = d3(h[5], h[8]) > 0.8 * chain && d3(h[0], h[8]) > d3(h[0], h[6]);
@@ -501,6 +558,7 @@ function isPointing(h) {
 
 function processFrame(poseRes, handRes, t) {
   lastPoseRaw = poseRes.landmarks?.[0] || null;
+  lastWorld = poseRes.worldLandmarks?.[0] || null;
   P = updatePose(lastPoseRaw, t);
   handsNow = assignHands(handRes);
   pointers = [];
@@ -540,15 +598,9 @@ function classify(tip, ptrSide, other) {
   // The non-pointing hand, if the hand tracker sees it: individual hand bones
   if (other) {
     const h = other.lm, hs = len(sub(h[0], h[9])), th = hs * 0.17, w = hs * 0.1;
-    const hseg = (id, a, b, finger) => { const { d } = segDist(tip, a, b); push(id, other.side, (d / th) * 0.5, { type: "seg", a, b, w }, finger); };
-    const fingers = [["thumb", [1, 2, 3, 4]], ["index", [5, 6, 7, 8]], ["middle", [9, 10, 11, 12]], ["ring", [13, 14, 15, 16]], ["little", [17, 18, 19, 20]]];
-    for (const [fname, [a, b, c, d]] of fingers) {
-      if (fname === "thumb") {
-        hseg("metacarpals", h[a], h[b], fname); hseg("proximalPhalanx", h[b], h[c], fname); hseg("distalPhalanx", h[c], h[d], fname);
-      } else {
-        hseg("metacarpals", lerp(h[0], h[a], 0.35), lerp(h[0], h[a], 0.92), fname);
-        hseg("proximalPhalanx", h[a], h[b], fname); hseg("middlePhalanx", h[b], h[c], fname); hseg("distalPhalanx", h[c], h[d], fname);
-      }
+    for (const hb of handBones(other)) {
+      const { d } = segDist(tip, hb.a, hb.b);
+      push(hb.id, other.side, (d / th) * 0.5, { type: "seg", a: hb.a, b: hb.b, w }, hb.finger);
     }
     const wc = lerp(h[0], h[9], 0.15), r = hs * 0.25;
     push("carpals", other.side, (len(sub(tip, wc)) / r) * 0.5, { type: "point", c: wc, r: r * 0.7 });
@@ -570,32 +622,26 @@ function classify(tip, ptrSide, other) {
   const neck = mid(Ls, Rs);
 
   // Limbs: the pointing arm is skipped, since the fingertip always lies near it
-  const sides = [["L", 11, 13, 15, 23, 25, 27, 31, 19], ["R", 12, 14, 16, 24, 26, 28, 32, 20]];
-  for (const [side, sh, el, wr, hip, kn, an, ft, idx] of sides) {
-    const S = P[sh], E = P[el], Wr = P[wr], Hp = P[hip], K = P[kn], A = P[an];
+  for (const side of ["L", "R"]) {
+    const g = limbGeom(side);
     if (side !== ptrSide) {
-      if (S && E) seg("humerus", side, lerp(S, E, 0.12), lerp(S, E, 0.88));
-      if (E && Wr) seg("radiusUlna", side, lerp(E, Wr, 0.12), Wr);
-      pt("elbow", side, E, sw * 0.14);
-      if (!other && Wr && P[idx]) seg("hand", side, Wr, P[idx], segTh * 0.8);
+      if (g.humerus) seg("humerus", side, ...g.humerus);
+      if (g.forearm) seg("radiusUlna", side, ...g.forearm);
+      pt("elbow", side, g.E, sw * 0.14);
+      if (!other && g.Wr && g.I) seg("hand", side, g.Wr, g.I, segTh * 0.8);
     }
-    if (S) {
-      seg("clavicle", side, lerp(neck, S, 0.12), lerp(neck, S, 0.85), sw * 0.12);
-      pt("acromion", side, S, sw * 0.14);
-    }
-    if (Hp && K) seg("femur", side, lerp(Hp, K, 0.05), lerp(Hp, K, 0.88), segTh * 1.2);
-    pt("patella", side, K, sw * 0.16);
-    if (K && A) seg("tibiaFibula", side, lerp(K, A, 0.12), A);
-    if (A && P[ft]) seg("foot", side, A, P[ft], segTh * 0.8);
+    if (g.clavicle) seg("clavicle", side, ...g.clavicle, sw * 0.12);
+    pt("acromion", side, g.S, sw * 0.14);
+    if (g.femur) seg("femur", side, ...g.femur, segTh * 1.2);
+    pt("patella", side, g.K, sw * 0.16);
+    if (g.shin) seg("tibiaFibula", side, ...g.shin);
+    if (g.foot) seg("foot", side, ...g.foot, segTh * 0.8);
   }
 
   // Head, using the face points of the pose model
-  const nose = P[0], eL = P[2], eR = P[5], earL = P[7], earR = P[8], mL = P[9], mR = P[10];
-  if (nose && eL && eR && mL && mR) {
-    const eyeMid = mid(eL, eR), mouthMid = mid(mL, mR);
-    const down = sub(mouthMid, eyeMid), e = len(down) || 1, dn = norm(down);
-    const lat = earL && earR ? norm(sub(earL, earR)) : norm(sub(eL, eR));
-    const half = earL && earR ? len(sub(earL, earR)) / 2 : len(sub(eL, eR)) * 1.4;
+  const hf = headFrame();
+  if (hf) {
+    const { eyeMid, mouthMid, down, e, dn, lat, half } = hf;
     const rel = sub(tip, eyeMid);
     const y = dot(rel, dn) / e, x = dot(rel, lat) / half, ax = Math.abs(x);
     const side = x > 0 ? "L" : "R";
@@ -617,12 +663,11 @@ function classify(tip, ptrSide, other) {
   }
 
   // Torso: a local frame from shoulders (t = 0) to hips (t = 1)
-  const Lh = P[23], Rh = P[24];
-  if (Lh && Rh) {
-    const S = neck, Hm = mid(Lh, Rh), v = sub(Hm, S);
+  const tf = torsoFrame();
+  if (tf) {
+    const { S, v, across } = tf;
     const t = dot(sub(tip, S), v) / (dot(v, v) || 1);
-    const across = norm(sub(Ls, Rs));
-    const halfW = (sw / 2) + ((len(sub(Lh, Rh)) * 1.4) / 2 - sw / 2) * clamp(t, 0, 1);
+    const halfW = tf.halfW(t);
     const s = dot(sub(tip, add(S, mul(v, t))), across) / halfW;   // + is your left
     const as = Math.abs(s), side = s > 0 ? "L" : "R";
     if (t >= -0.02 && t <= 1.12 && as <= 1.05) {
@@ -737,41 +782,194 @@ function updateStatus() {
 /* ------------------------------------------------------------------
    Drawing
 ------------------------------------------------------------------- */
-const HAND_LINKS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
-const BODY_LINKS = [[11,13],[13,15],[12,14],[14,16],[23,25],[25,27],[24,26],[26,28],[27,31],[28,32]];
 const X = p => ({ x: settings.mirror ? W - p.x : p.x, y: p.y });
 
-function boneStroke(a, b, w, color) {
-  const A = X(a), B = X(b);
-  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w; ctx.lineCap = "round";
-  ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
-  for (const q of [A, B]) { ctx.beginPath(); ctx.arc(q.x, q.y, w * 0.7, 0, Math.PI * 2); ctx.fill(); }
+const BONE_FILL = "rgba(239,231,212,0.85)", BONE_EDGE = "rgba(14,29,39,0.6)";
+
+// 0 = plain bone, 1 = being pointed at (pending), 2 = selected
+function tone(id, side, finger) {
+  if (!id || appMode === "collect") return 0;   // never reveal answers while collecting data
+  const hit = c => c && c.id === id && (!BONES[id].sided || c.side === side) && (!c.finger || c.finger === finger);
+  return hit(sel.committed) ? 2 : hit(sel.pending) ? 1 : 0;
 }
+
+// One bone as a polyline (2 points), a quadratic curve (3 points) or a smooth path (more).
+// id/side/finger name the bone it represents, so the one under your finger lights up.
+function boneStroke(pts, w, id = null, side = null, finger = null) {
+  const q = pts.map(X), tn = tone(id, side, finger);
+  const trace = () => {
+    ctx.beginPath(); ctx.moveTo(q[0].x, q[0].y);
+    if (q.length === 3) ctx.quadraticCurveTo(q[1].x, q[1].y, q[2].x, q[2].y);
+    else for (let i = 1; i < q.length; i++) ctx.lineTo(q[i].x, q[i].y);
+  };
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = BONE_EDGE; ctx.lineWidth = w * 1.7; trace(); ctx.stroke();
+  ctx.strokeStyle = tn === 2 ? "#F3B63F" : tn === 1 ? "rgba(243,182,63,0.7)" : BONE_FILL;
+  if (tn === 2) { ctx.shadowColor = "#F3B63F"; ctx.shadowBlur = 16; }
+  ctx.lineWidth = w; trace(); ctx.stroke();
+  ctx.restore();
+}
+
+// A joint or small bone as a dot
+function knob(c, r, id = null, side = null) {
+  boneStroke([c, c], r * 2, id, side);
+}
+
+function sampled(n, f) { return Array.from({ length: n + 1 }, (_, i) => f(i / n)); }
+
+/* Anatomical bone rendering: filled, outlined shapes in an ivory "X-ray" palette.
+   Each shape still names the bone it stands for, so the one under your finger lights up. */
+const BONE_SHADE = "rgba(214,201,170,0.94)", BONE_LINE = "rgba(74,56,34,0.85)", HOLE = "rgba(10,18,26,0.88)";
+
+function paint(pts, id = null, side = null, finger = null, ew = 1.2, fill = null) {
+  const q = pts.map(X), tn = tone(id, side, finger);
+  ctx.save();
+  ctx.beginPath(); q.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath();
+  ctx.fillStyle = tn === 2 ? "#F3B63F" : tn === 1 ? "rgba(243,182,63,0.85)" : (fill || BONE_FILL);
+  if (tn === 2) { ctx.shadowColor = "#F3B63F"; ctx.shadowBlur = 16; }
+  ctx.fill();
+  ctx.shadowBlur = 0; ctx.lineJoin = "round"; ctx.strokeStyle = fill === HOLE ? "rgba(0,0,0,0.5)" : BONE_LINE; ctx.lineWidth = ew; ctx.stroke();
+  ctx.restore();
+}
+
+// Ellipse as a polygon: c centre, ax/ay unit axes
+function ell(c, ax, ay, rx, ry, n = 18) {
+  return Array.from({ length: n }, (_, i) => { const a = (2 * Math.PI * i) / n; return add(c, add(mul(ax, rx * Math.cos(a)), mul(ay, ry * Math.sin(a)))); });
+}
+
+// A long bone: flared ends (epiphyses) with rounded condyles and a narrower shaft
+function longBone(a, b, we, ws, id = null, side = null, finger = null, ew = 1.2) {
+  if (!a || !b) return;
+  const d = norm(sub(b, a)), n = { x: -d.y, y: d.x };
+  const pt = (t, wd) => add(lerp(a, b, t), mul(n, wd / 2));
+  paint([pt(0, we), pt(0.14, ws), pt(0.86, ws), pt(1, we), pt(1, -we), pt(0.86, -ws), pt(0.14, -ws), pt(0, -we)], id, side, finger, ew);
+  paint(ell(a, d, n, we * 0.55, we * 0.62, 12), id, side, finger, ew);
+  paint(ell(b, d, n, we * 0.55, we * 0.62, 12), id, side, finger, ew);
+}
+
+// Highlight-only stroke for regions that are not their own shape (skull areas)
+function glow(pts, w, id, side = null) { if (tone(id, side, null) > 0) boneStroke(pts, w, id, side); }
 
 function drawSkeleton() {
   if (!P || !P[11] || !P[12]) return;
-  const sw = len(sub(P[11], P[12])), w = sw * 0.035, col = "rgba(239,231,212,0.32)";
-  for (const [a, b] of BODY_LINKS) if (P[a] && P[b]) boneStroke(P[a], P[b], w, col);
-  const neck = mid(P[11], P[12]);
-  boneStroke(lerp(neck, P[11], 0.12), lerp(neck, P[11], 0.85), w * 0.8, col);
-  boneStroke(lerp(neck, P[12], 0.12), lerp(neck, P[12], 0.85), w * 0.8, col);
-  if (P[23] && P[24]) {
-    const hm = mid(P[23], P[24]);
-    boneStroke(neck, hm, w * 0.6, "rgba(239,231,212,0.18)");
-    boneStroke(P[23], P[24], w * 0.6, "rgba(239,231,212,0.18)");
-    // faint rib cage outline
-    const ribs = [[0.12, 0.8], [0.24, 0.9], [0.36, 0.92], [0.48, 0.85]];
-    const across = sub(P[11], P[12]);
-    ctx.strokeStyle = "rgba(239,231,212,0.14)"; ctx.lineWidth = w * 0.5;
-    for (const [t, spread] of ribs) {
-      const c = lerp(neck, hm, t), half = mul(across, spread / 2);
-      const A = X(sub(c, half)), B = X(add(c, half)), C = X(lerp(neck, hm, t + 0.07));
-      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.quadraticCurveTo(C.x, C.y, B.x, B.y); ctx.stroke();
+  const sw = len(sub(P[11], P[12])), w = sw * 0.035, ew = Math.max(1, w * 0.1);
+  const tf = torsoFrame(), hf = headFrame();
+  const AX = { x: 1, y: 0 }, AY = { x: 0, y: 1 };
+
+  if (tf) {
+    const { at, across } = tf, down = norm(tf.v);
+
+    // Scapulae sit behind the ribs
+    for (const sg of [1, -1]) paint([at(0.0, sg * 0.98), at(0.1, sg * 0.5), at(0.34, sg * 0.66), at(0.2, sg * 0.9)], null, null, null, ew, BONE_SHADE);
+
+    // Ribs, by the same bands classify() uses: 7 true, 3 false, 2 floating
+    for (const sg of [1, -1]) {
+      const side = sg > 0 ? "L" : "R";
+      for (let i = 0; i < 12; i++) {
+        const t0 = 0.04 + i * 0.05, id = i < 7 ? "trueRibs" : i < 10 ? "falseRibs" : "floatingRibs";
+        const start = at(t0, sg * 0.08), out = at(t0 + 0.01 + i * 0.002, sg * (1.02 - i * 0.012));
+        const end = i < 7 ? at(t0 + 0.11, sg * 0.14) : i < 10 ? at(t0 + 0.12, sg * 0.34) : at(t0 + 0.07, sg * 0.8);
+        boneStroke([start, at(t0 - 0.05, sg * 0.75), out], w * 0.62, id, side);
+        boneStroke([out, at(t0 + 0.1, sg * 0.9), end], w * 0.62, id, side);
+      }
+    }
+
+    // Sternum: manubrium, body, xiphoid
+    paint([at(0, -0.2), at(0, 0.2), at(0.1, 0.13), at(0.12, -0.13)], "manubrium", null, null, ew);
+    paint([at(0.13, -0.13), at(0.13, 0.13), at(0.42, 0.1), at(0.42, -0.1)], "sternum", null, null, ew);
+    paint([at(0.43, -0.06), at(0.43, 0.06), at(0.5, 0)], "xiphoid", null, null, ew);
+
+    // Vertebrae from the base of the neck to the sacrum; the lumbar ones answer to "abdomen"
+    for (let i = 0; i < 17; i++) {
+      const t = (i / 16) * 0.88, lum = t >= 0.6 && t <= 0.92;
+      paint(ell(at(t, 0), across, down, w * (0.55 + 0.6 * t), len(tf.v) * 0.022, 14), lum ? "abdomen" : null, null, null, ew, i % 2 ? BONE_SHADE : null);
+    }
+
+    // Pelvis: ilium wings, ischium and pubic rami around the obturator foramen, sacrum
+    for (const sg of [1, -1]) {
+      const side = sg > 0 ? "L" : "R";
+      paint([at(0.8, sg * 0.14), at(0.74, sg * 0.5), at(0.7, sg * 1.0), at(0.86, sg * 1.12), at(0.98, sg * 0.86), at(1.04, sg * 0.62), at(1.0, sg * 0.3)], "ilium", side, null, ew);
+      paint([at(1.0, sg * 0.64), at(1.1, sg * 0.5), at(1.15, sg * 0.18), at(1.09, sg * 0.04), at(1.04, sg * 0.18), at(1.0, sg * 0.3)], null, null, null, ew, BONE_SHADE);
+      paint(ell(at(1.06, sg * 0.42), across, down, w * 0.5, w * 0.8, 10), null, null, null, ew, HOLE);
+    }
+    paint([at(0.82, -0.2), at(0.82, 0.2), at(1.0, 0.1), at(1.08, 0), at(1.0, -0.1)], null, null, null, ew, BONE_SHADE);
+    paint([at(1.1, -0.16), at(1.1, 0.16), at(1.15, 0.0)], "pubis", null, null, ew);
+  }
+
+  if (hf) {
+    const { at, dn, lat } = hf;
+    // Cranium: dome plus cheek line
+    const R = 0.95 * hf.half / hf.e;      // vertical radius that matches the dome's width, so the cranium is round
+    const top = k => -0.6 - R * k;        // k = 0..1 up the dome
+    const dome = sampled(24, u => at(-0.95 * Math.cos(Math.PI * u), top(Math.sin(Math.PI * u))));
+    paint([...dome, at(0.95, 0.2), at(0.78, 0.7), at(0.4, 0.88), at(-0.4, 0.88), at(-0.78, 0.7), at(-0.95, 0.2)], null, null, null, ew * 1.4);
+    // Coronal and sagittal sutures
+    const sut = pts => { const q = pts.map(X); ctx.save(); ctx.strokeStyle = "rgba(74,56,34,0.5)"; ctx.lineWidth = ew; ctx.beginPath(); q.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.stroke(); ctx.restore(); };
+    sut(sampled(14, u => at(-0.9 + 1.8 * u, top(0.5 + 0.1 * Math.sin(Math.PI * u)))));
+    sut([at(0, top(0.95)), at(0, top(0.5))]);
+    // Eye sockets and nasal opening
+    for (const sg of [1, -1]) paint(ell(at(sg * 0.42, 0.12), lat, dn, hf.half * 0.2, hf.e * 0.17, 16), null, null, null, ew, HOLE);
+    paint([at(0, 0.28), at(-0.09, 0.62), at(0.09, 0.62)], null, null, null, ew, HOLE);
+    // Cheek bones plus highlights for the skull regions
+    for (const sg of [1, -1]) {
+      const side = sg > 0 ? "L" : "R";
+      boneStroke([at(sg * 0.5, 0.42), at(sg * 0.95, 0.12)], w * 0.8);
+      glow(sampled(16, u => at(sg * (0.4 + 0.2 * Math.cos(2 * Math.PI * u)), 0.12 + 0.2 * Math.sin(2 * Math.PI * u))), w * 0.8, "orbit", side);
+      glow([at(sg * 0.5, 0.45), at(sg * 0.95, 0.15)], w * 0.9, "zygomatic", side);
+      glow([at(sg * 0.97, -0.3), at(sg * 0.97, 0.9)], w * 1.0, "temporal", side);
+    }
+    glow(sampled(14, u => { const a = Math.PI * (0.12 + 0.76 * u); return at(-0.95 * Math.cos(a), top(Math.sin(a))); }), w * 1.4, "parietal");
+    glow([at(-0.72, top(0.3)), at(0, top(0.45)), at(0.72, top(0.3))], w * 1.4, "frontal");
+    glow([at(0, 0.0), at(0, 0.5)], w * 1.0, "nasal");
+    glow([at(-0.45, 0.78), at(0, 0.5), at(0.45, 0.78)], w * 0.9, "maxilla");
+    // Upper teeth, then the jaw with its lower teeth
+    ctx.save(); ctx.setLineDash([w * 0.5, w * 0.12]);
+    boneStroke(sampled(8, u => at(-0.4 + 0.8 * u, 0.78 + 0.1 * Math.sin(Math.PI * u))), w * 0.65);
+    ctx.restore();
+    boneStroke(sampled(20, u => at(0.95 * Math.cos(Math.PI * u), 0.55 + 1.35 * Math.sin(Math.PI * u))), w * 1.4, "mandible");
+    boneStroke(sampled(8, u => at(-0.4 + 0.8 * u, 0.9 + 0.08 * Math.sin(Math.PI * u))), w * 0.6, "mandible");
+    // Cervical spine: the segment classify() scores, as stacked vertebrae
+    const chin = add(hf.mouthMid, mul(hf.down, 0.8)), neck = mid(P[11], P[12]), c2 = lerp(chin, neck, 0.9), dd = norm(sub(neck, chin));
+    for (let i = 0; i <= 6; i++) paint(ell(lerp(chin, c2, i / 6), lat, dd, w * (0.75 + i * 0.05), w * 0.34, 12), "cervical", null, null, ew, i % 2 ? BONE_SHADE : null);
+  }
+
+  for (const side of ["L", "R"]) {
+    const g = limbGeom(side), sgn = side === "L" ? 1 : -1;
+    const pair = (seg, dx, we, ws, id) => {
+      const n = norm({ x: -(seg[1].y - seg[0].y), y: seg[1].x - seg[0].x });
+      longBone(add(seg[0], mul(n, dx)), add(seg[1], mul(n, dx)), we, ws, id, side, null, ew);
+    };
+    if (g.clavicle) longBone(g.clavicle[0], g.clavicle[1], w * 0.75, w * 0.5, "clavicle", side, null, ew);
+    if (g.S) paint(ell(g.S, AX, AY, w * 1.15, w * 1.15, 14), "acromion", side, null, ew);
+    if (g.humerus) longBone(g.humerus[0], g.humerus[1], w * 1.5, w * 0.95, "humerus", side, null, ew);
+    if (g.forearm) { pair(g.forearm, -w * 0.45, w * 0.9, w * 0.55, "radiusUlna"); pair(g.forearm, w * 0.45, w * 0.9, w * 0.55, "radiusUlna"); }
+    if (g.E) paint(ell(g.E, AX, AY, w * 1.0, w * 1.0, 12), "elbow", side, null, ew);
+    if (g.Hp) paint(ell(g.Hp, AX, AY, w * 1.3, w * 1.3, 14), null, null, null, ew);
+    if (g.femur) longBone(g.femur[0], g.femur[1], w * 2.1, w * 1.3, "femur", side, null, ew);
+    if (g.shin) { pair(g.shin, -w * 0.15, w * 1.5, w * 0.95, "tibiaFibula"); pair(g.shin, w * 0.85 * sgn, w * 0.8, w * 0.45, "tibiaFibula"); }
+    if (g.K) paint(ell(g.K, AX, AY, w * 0.95, w * 1.15, 14), "patella", side, null, ew, BONE_SHADE);
+    if (g.foot && g.A) {
+      // Heel, tarsals, then five metatarsals and toes fanned toward the foot tip
+      const A = g.A, F = g.foot[1], d = norm(sub(F, A)), n = { x: -d.y, y: d.x }, fl = len(sub(F, A));
+      paint(ell(lerp(A, F, 0.18), d, n, fl * 0.2, w * 1.0, 12), "foot", side, null, ew);
+      paint(ell(lerp(A, F, 0.42), d, n, fl * 0.16, w * 1.2, 12), "foot", side, null, ew, BONE_SHADE);
+      for (let k = -2; k <= 2; k++) {
+        const base = add(lerp(A, F, 0.52), mul(n, k * w * 0.42)), tip = add(lerp(A, F, 0.97), mul(n, k * w * 0.62));
+        longBone(base, tip, w * 0.5, w * 0.32, "foot", side, null, ew);
+      }
     }
   }
+
   for (const h of handsNow) {
-    const hw = len(sub(h.lm[0], h.lm[9])) * 0.05;
-    for (const [a, b] of HAND_LINKS) boneStroke(h.lm[a], h.lm[b], hw, "rgba(239,231,212,0.28)");
+    const hs = len(sub(h.lm[0], h.lm[9]));
+    // Wrist: a cluster of carpals
+    const wc = lerp(h.lm[0], h.lm[9], 0.15), dx = norm(sub(h.lm[5], h.lm[17])), dy = norm(sub(h.lm[9], h.lm[0]));
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 4; c++) paint(ell(add(wc, add(mul(dx, (c - 1.5) * hs * 0.1), mul(dy, (r - 0.5) * hs * 0.1))), dx, dy, hs * 0.055, hs * 0.05, 8), "carpals", h.side, null, ew, BONE_SHADE);
+    for (const hb of handBones(h)) {
+      const meta = hb.id === "metacarpals";
+      longBone(hb.a, hb.b, hs * (meta ? 0.1 : 0.085), hs * (meta ? 0.06 : 0.05), hb.id, h.side, hb.finger, ew * 0.8);
+    }
   }
 }
 
@@ -779,7 +977,7 @@ function drawShape(shape, strong) {
   const color = strong ? "#F3B63F" : "rgba(243,182,63,0.55)";
   ctx.save();
   if (strong) { ctx.shadowColor = "#F3B63F"; ctx.shadowBlur = 18; }
-  if (shape.type === "seg") boneStroke(shape.a, shape.b, shape.w * (strong ? 1.25 : 0.9), color);
+  if (shape.type === "seg") { ctx.lineCap = "round"; ctx.strokeStyle = color; ctx.lineWidth = shape.w * (strong ? 1.25 : 0.9); const A = X(shape.a), B = X(shape.b); ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke(); }
   else {
     const c = X(shape.c);
     ctx.fillStyle = strong ? "rgba(243,182,63,0.35)" : "rgba(243,182,63,0.15)";
@@ -789,6 +987,207 @@ function drawShape(shape, strong) {
   ctx.restore();
 }
 
+/* ------------------------------------------------------------------
+   3D skeleton (SKEL bone meshes fitted to your body, see export_skel.py).
+   skeleton.glb holds one mesh per bone in a rest pose; skeleton_rig.json holds the rest joints.
+   Each frame, every bone gets a rigid transform from MediaPipe's pose landmarks: the 2D landmark
+   gives its screen position, the 3D "world" landmark gives its depth and direction, and the
+   result is rendered with a perspective camera that matches the webcam.
+------------------------------------------------------------------- */
+const S3 = { ready: false, fov: 55, D: null, bs: null, pos: new Array(33).fill(null) };
+
+// Which SKEL bones light up for each app bone ({s} = l or r, from the side you pointed at)
+const BONE_SKEL = {
+  parietal: ["head"], frontal: ["head"], temporal: ["head"], nasal: ["head"], orbit: ["head"], zygomatic: ["head"], maxilla: ["head"], mandible: ["head"], cervical: ["head"],
+  clavicle: ["scapula_{s}"], acromion: ["scapula_{s}"],
+  manubrium: ["thorax"], sternum: ["thorax"], xiphoid: ["thorax"], trueRibs: ["thorax"], falseRibs: ["thorax"], floatingRibs: ["thorax"],
+  abdomen: ["lumbar_body"], ilium: ["pelvis"], pubis: ["pelvis"],
+  humerus: ["humerus_{s}"], elbow: ["humerus_{s}", "ulna_{s}"], radiusUlna: ["ulna_{s}", "radius_{s}"],
+  carpals: ["hand_{s}"], metacarpals: ["hand_{s}"], proximalPhalanx: ["hand_{s}"], middlePhalanx: ["hand_{s}"], distalPhalanx: ["hand_{s}"], hand: ["hand_{s}"],
+  femur: ["femur_{s}"], patella: ["femur_{s}", "tibia_{s}"], tibiaFibula: ["tibia_{s}"], foot: ["talus_{s}", "calcn_{s}", "toes_{s}"],
+};
+
+async function initSkel3d() {
+  const el = $("#skelStatus");
+  try {
+    const rigRes = await fetch("skeleton_rig.json");
+    if (!rigRes.ok) throw new Error("skeleton_rig.json not found next to this page");
+    const rig = await rigRes.json();
+    const T = await import("three");
+    const { GLTFLoader } = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
+    const gltf = await new GLTFLoader().loadAsync("skeleton.glb");
+    gltf.scene.updateMatrixWorld(true);
+
+    const renderer = new T.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setClearColor(0x000000, 0);
+    const scene = new T.Scene();
+    scene.add(new T.HemisphereLight(0xffffff, 0x3a4652, 1.6));
+    const sun = new T.DirectionalLight(0xffffff, 2.2); sun.position.set(0.4, 0.8, 1); scene.add(sun);
+    const camera = new T.PerspectiveCamera(S3.fov, W / H, 0.05, 30);
+
+    const names = new Set(Object.keys(rig.joints)), bones = {}, mats = {};
+    gltf.scene.traverse(o => {
+      if (!o.isMesh) return;
+      let n = o; while (n && !names.has(n.name)) n = n.parent;
+      if (!n) return;
+      o.geometry.applyMatrix4(o.matrixWorld);          // bake any node transform, so vertices are in rest-pose coordinates
+      if (!o.geometry.attributes.normal) o.geometry.computeVertexNormals();
+      o.matrixAutoUpdate = false; o.matrix.identity(); o.frustumCulled = false;
+      o.material = mats[n.name] = new T.MeshStandardMaterial({ color: 0xe9e0c8, roughness: 0.55, metalness: 0.05, emissive: 0x000000 });
+      bones[n.name] = o;
+    });
+    Object.values(bones).forEach(m => scene.add(m));
+    if (!Object.keys(bones).length) throw new Error("no bone meshes found in skeleton.glb");
+
+    const J = {}; for (const [n, v] of Object.entries(rig.joints)) J[n] = new T.Vector3(...v);
+    const C = {}; for (const [n, v] of Object.entries(rig.centroids || {})) C[n] = new T.Vector3(...v);
+    const earMid = new T.Vector3(...(rig.ear_mid || [0, J.head.y + 0.08, J.head.z]));
+    const hipMid = J.femur_l.clone().add(J.femur_r).multiplyScalar(0.5), shMid = J.humerus_l.clone().add(J.humerus_r).multiplyScalar(0.5);
+    const restBs = J.humerus_l.distanceTo(J.humerus_r) + J.femur_l.distanceTo(J.femur_r) + hipMid.distanceTo(shMid);
+    Object.assign(S3, { ready: true, T, renderer, scene, camera, bones, mats, J, C, earMid, hipMid, shMid, restBs });
+    el.textContent = `3D skeleton loaded (${Object.keys(bones).length} bones, ${rig.gender}).`;
+  } catch (e) {
+    console.warn("3D skeleton unavailable", e);
+    S3.failed = true;
+    el.textContent = `3D skeleton not loaded (${e.message || e}). Overlay turned off; 2D is still available. See the README to create skeleton.glb.`;
+  }
+}
+
+// Landmarks in camera space: x right, y up, camera looks down -z
+function updatePos3d() {
+  const { T } = S3, wl = lastWorld;
+  if (!P[11] || !P[12] || !P[23] || !P[24] || !wl[11] || !wl[12] || !wl[23] || !wl[24]) return false;
+  const f = (H / 2) / Math.tan(S3.fov * Math.PI / 360), cx = W / 2, cy = H / 2;
+  const w3 = i => new T.Vector3(wl[i].x, wl[i].y, wl[i].z);
+  const shP = len(sub(P[11], P[12])), tP = len(sub(mid(P[11], P[12]), mid(P[23], P[24])));
+  const shW = w3(11).distanceTo(w3(12)), tW = w3(11).add(w3(12)).multiplyScalar(0.5).distanceTo(w3(23).add(w3(24)).multiplyScalar(0.5));
+  if (shP < 1 || tP < 1) return false;
+  const D = Math.min(f * shW / shP, f * tW / tP);           // the least foreshortened measure gives the distance
+  if (!(D > 0.3 && D < 15)) return false;
+  S3.D = S3.D ? S3.D + (D - S3.D) * 0.15 : D;
+  for (let i = 0; i < 33; i++) {
+    if (!P[i] || !wl[i]) { S3.pos[i] = null; continue; }
+    const d = S3.D + wl[i].z;                                 // MediaPipe world z grows away from the camera
+    const p = new T.Vector3((P[i].x - cx) / f * d, -(P[i].y - cy) / f * d, -d);
+    S3.pos[i] = S3.pos[i] ? S3.pos[i].lerp(p, 0.55) : p;
+  }
+  return true;
+}
+
+function poseSkel3d() {
+  const { T, J, C, bones } = S3, pos = i => S3.pos[i];
+  const M = (A, Jr, q, s) => new T.Matrix4().compose(A.clone().sub(Jr.clone().applyQuaternion(q).multiplyScalar(s)), q, new T.Vector3(s, s, s));
+  const basis = (x, up) => {
+    x = x.clone().normalize();
+    const z = x.clone().cross(up).normalize(), y = z.clone().cross(x);
+    return { q: new T.Quaternion().setFromRotationMatrix(new T.Matrix4().makeBasis(x, y, z)), z };
+  };
+  const mids = (a, b) => a.clone().add(b).multiplyScalar(0.5);
+  const out = {};                                    // bone name -> matrix
+
+  const shL = pos(11), shR = pos(12), hpL = pos(23), hpR = pos(24);
+  const shM = mids(shL, shR), hpM = mids(hpL, hpR), up = shM.clone().sub(hpM);
+  const obsSum = shL.distanceTo(shR) + hpL.distanceTo(hpR) + shM.distanceTo(hpM);
+  const bsNow = obsSum / S3.restBs;
+  S3.bs = S3.bs ? S3.bs + (bsNow - S3.bs) * 0.1 : bsNow;
+  const bs = S3.bs;
+
+  // Torso: pelvis frame from the hips, thorax frame from the shoulders
+  const restUp = S3.shMid.clone().sub(S3.hipMid);
+  const pel = basis(hpL.clone().sub(hpR), up), pelRest = basis(J.femur_l.clone().sub(J.femur_r), restUp);
+  const thx = basis(shL.clone().sub(shR), up), thxRest = basis(J.humerus_l.clone().sub(J.humerus_r), restUp);
+  const mPel = M(hpM, S3.hipMid, pel.q.clone().multiply(pelRest.q.clone().invert()), bs);
+  const mThx = M(shM, S3.shMid, thx.q.clone().multiply(thxRest.q.clone().invert()), bs);
+  out.pelvis = mPel; out.lumbar_body = mPel;
+  out.thorax = mThx; out.scapula_l = mThx; out.scapula_r = mThx;
+
+  // Head: ears give the sideways axis, the nose the facing direction
+  if (pos(0) && pos(7) && pos(8)) {
+    const earM = mids(pos(7), pos(8)), fwd = pos(0).clone().sub(earM);
+    const x = pos(7).clone().sub(pos(8)).normalize();
+    fwd.sub(x.clone().multiplyScalar(fwd.dot(x)));
+    const hd = basis(x, new T.Vector3().crossVectors(fwd, x));   // x cross this = the facing direction
+    out.head = M(earM, S3.earMid, hd.q, bs);
+  }
+
+  // Limb segments: swing the bone from its rest direction onto the observed one, then fix the twist
+  const seg = (Jn, Cn, a, b, twistRest, twistObs) => {
+    if (!pos(a) || !pos(b)) return null;
+    const Jr = J[Jn], Cr = Cn instanceof T.Vector3 ? Cn : J[Cn], A = pos(a), B = pos(b);
+    const dr = Cr.clone().sub(Jr), d = B.clone().sub(A), rl = dr.length(), l = d.length();
+    if (rl < 1e-6 || l < 1e-6) return null;
+    const ax = d.clone().divideScalar(l);
+    const q = new T.Quaternion().setFromUnitVectors(dr.clone().divideScalar(rl), ax);
+    if (twistObs) {
+      const perp = v => v.clone().sub(ax.clone().multiplyScalar(v.dot(ax)));
+      const r1 = perp(twistRest.clone().applyQuaternion(q)), r2 = perp(twistObs);
+      if (r1.lengthSq() > 1e-8 && r2.lengthSq() > 1e-8) {
+        r1.normalize(); r2.normalize();
+        q.premultiply(new T.Quaternion().setFromAxisAngle(ax, Math.atan2(ax.dot(r1.clone().cross(r2)), r1.dot(r2))));
+      }
+    }
+    return M(A, Jr, q, clamp(l / rl, bs * 0.8, bs * 1.25));
+  };
+  const FWD = new T.Vector3(0, 0, 1);
+  for (const [s, k] of [["r", { sh: 12, el: 14, wr: 16, ix: 20, pk: 18, hip: 24, kn: 26, an: 28, heel: 30, toe: 32 }], ["l", { sh: 11, el: 13, wr: 15, ix: 19, pk: 17, hip: 23, kn: 25, an: 27, heel: 29, toe: 31 }]]) {
+    const set = (names, m) => { if (m) for (const n of names) out[`${n}_${s}`] = m; };
+    set(["humerus"], seg(`humerus_${s}`, `ulna_${s}`, k.sh, k.el));
+    set(["ulna", "radius"], seg(`ulna_${s}`, `hand_${s}`, k.el, k.wr));
+    if (pos(k.ix) && pos(k.pk) && C[`hand_${s}`]) {
+      const tip = mids(pos(k.ix), pos(k.pk));
+      const A = pos(k.wr), d = A && tip.clone().sub(A), dr = C[`hand_${s}`].clone().sub(J[`hand_${s}`]);
+      if (A && d.length() > 1e-6 && dr.length() > 1e-6) {
+        const q = new T.Quaternion().setFromUnitVectors(dr.clone().normalize(), d.clone().normalize());
+        set(["hand"], M(A, J[`hand_${s}`], q, clamp(d.length() / dr.length(), bs * 0.8, bs * 1.25)));
+      }
+    }
+    set(["femur"], seg(`femur_${s}`, `tibia_${s}`, k.hip, k.kn, FWD, pel.z));
+    const footFwd = pos(k.toe) && pos(k.heel) ? pos(k.toe).clone().sub(pos(k.heel)) : pel.z;
+    set(["tibia"], seg(`tibia_${s}`, `talus_${s}`, k.kn, k.an, FWD, footFwd));
+    set(["talus", "calcn", "toes"], seg(`talus_${s}`, `toes_${s}`, k.an, k.toe));
+  }
+
+  for (const [name, mesh] of Object.entries(bones)) {
+    const m = out[name];
+    mesh.visible = !!m;
+    if (m) mesh.matrix.copy(m);
+  }
+}
+
+// Tint the bone(s) under your finger the same way the 2D drawing does
+function highlightSkel3d() {
+  const level = {};
+  for (const c of [sel.pending, sel.committed]) {
+    if (!c) continue;
+    const tn = tone(c.id, c.side, c.finger);
+    if (!tn) continue;
+    for (const pat of BONE_SKEL[c.id] || []) {
+      const n = pat.replace("{s}", (c.side || "L").toLowerCase());
+      level[n] = Math.max(level[n] || 0, tn);
+    }
+  }
+  for (const [n, mat] of Object.entries(S3.mats)) {
+    const lv = level[n] || 0;
+    mat.color.set(lv ? 0xf3b63f : 0xe9e0c8);
+    mat.emissive.set(lv === 2 ? 0x8a5a00 : lv === 1 ? 0x4a3000 : 0x000000);
+  }
+}
+
+function drawSkel3d() {
+  if (!S3.ready || !P || !lastWorld || !updatePos3d()) return false;
+  const { renderer, camera } = S3;
+  const size = renderer.getSize(new S3.T.Vector2());
+  if (size.x !== W || size.y !== H) { renderer.setSize(W, H, false); camera.aspect = W / H; camera.updateProjectionMatrix(); }
+  poseSkel3d();
+  highlightSkel3d();
+  renderer.render(S3.scene, camera);
+  ctx.save();
+  if (settings.mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }   // rendered in camera space, so mirror it like the video
+  ctx.drawImage(renderer.domElement, 0, 0, W, H);
+  ctx.restore();
+  return true;
+}
+
 function draw(t) {
   ctx.save();
   if (settings.mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
@@ -796,10 +1195,18 @@ function draw(t) {
   ctx.restore();
   ctx.fillStyle = "rgba(14,29,39,0.35)"; ctx.fillRect(0, 0, W, H);
 
-  if (settings.skeleton) drawSkeleton();
+  // A selected overlay that fails (3D files missing, or an error while drawing) drops back to none
+  if (settings.skeleton === 2 && S3.failed) setSkelMode(0);   // initSkel3d() already put the reason in the status line
+  try {
+    if (settings.skeleton === 2) drawSkel3d();
+    else if (settings.skeleton === 1) drawSkeleton();
+  } catch (e) {
+    console.warn("Skeleton overlay failed", e);
+    setSkelMode(0, `${settings.skeleton === 2 ? "3D" : "2D"} skeleton failed (${e.message || e}), overlay turned off.`);
+  }
   const showSel = appMode !== "collect";   // hide answers while collecting, so they can't bias the data
-  if (showSel && sel.pending) drawShape(sel.pending.shape, false);
-  if (showSel && sel.committed) drawShape(sel.committed.shape, true);
+  if (showSel && !settings.skeleton && sel.pending) drawShape(sel.pending.shape, false);
+  if (showSel && !settings.skeleton && sel.committed) drawShape(sel.committed.shape, true);
 
   const k = W / (canvas.getBoundingClientRect().width || W);   // keep UI sizes constant on screen
   if (activePtr) {
@@ -1225,7 +1632,16 @@ function renderInspector(t) {
    Settings
 ------------------------------------------------------------------- */
 $("#optMirror").onchange = e => (settings.mirror = e.target.checked);
-$("#optSkeleton").onchange = e => (settings.skeleton = e.target.checked);
+const SKEL_MODES = ["None", "2D", "3D"];
+function setSkelMode(m, note) {
+  settings.skeleton = m;
+  $("#optSkeleton").value = m;
+  $("#skelModeVal").textContent = SKEL_MODES[m];
+  if (note) $("#skelStatus").textContent = note;
+}
+$("#optSkeleton").oninput = e => setSkelMode(+e.target.value);
+setSkelMode(settings.skeleton);
+initSkel3d();
 $("#optGesture").onchange = e => (settings.requireGesture = e.target.checked);
 $("#optSpeak").onchange = e => (settings.speak = e.target.checked);
 $("#optDwell").oninput = e => { settings.dwell = +e.target.value; $("#dwellVal").textContent = `${settings.dwell} ms`; };

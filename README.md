@@ -9,6 +9,7 @@ The app uses [MediaPipe](https://developers.google.com/mediapipe) pose and hand 
 | Path | What it is |
 | --- | --- |
 | `bone-finder.html` | The whole app in one file: tracking, the rule-based classifier, Explore/Quiz/Collect modes, and the code that runs a trained model. |
+| `export_skel.py` | Fits SKEL to an SMPL body and writes `skeleton.glb` and `skeleton_rig.json` for the 3D overlay. |
 | `train.py` | Trains a small neural network on CSVs from Collect mode and exports `model.json` for the app. |
 | `synth_osso.py` | Builds synthetic training rows from SMPL body meshes and OSSO skeletons, for pretraining. |
 | `OSSO/` | A local copy of [OSSO](https://github.com/MarilynKeller/OSSO) (CVPR 2022), which infers a skeleton from a body mesh. Has its own `osso_venv`. |
@@ -108,6 +109,24 @@ Other requirements: `numpy`, `scipy`, `matplotlib` (for `preview`), and `trimesh
 ### Setting up OSSO
 
 See [OSSO/installation.md](OSSO/installation.md). In short, OSSO needs Python 3.8, the `gloss_skeleton` code, the compiled MPI `mesh` package (which needs Boost) and the STAR model files, which require an account at star.is.tue.mpg.de. OSSO is only tested on Ubuntu, so on Windows, WSL is the easiest way to run it.
+
+## 3D skeleton overlay (SMPL, SKEL)
+
+When `skeleton.glb` and `skeleton_rig.json` sit next to `bone-finder.html`, the app draws 3D bone meshes shaped to your body on top of the video and moves them with you. Without those files it falls back to the 2D drawing. Settings shows which one is active.
+
+Build the files once per person:
+
+1. **Photo to SMPL.** Take a full-body photo and run an image-to-SMPL regressor such as [4D-Humans / HMR2.0](https://github.com/shubham-goel/4D-Humans) or SMPLify-X. Save its SMPL output (`betas`, `poses`, `trans`, optionally `gender`) as an `.npz`.
+2. **SMPL to SKEL, then export.** Clone [SKEL](https://github.com/MarilynKeller/SKEL), download `skel_male.pkl` / `skel_female.pkl` into its `data/skel/` and install it (Python 3.12). Then:
+   ```
+   python export_skel.py --skel-dir path/to/SKEL --gender male --smpl-fit me_smpl.npz --out .
+   ```
+   This fits SKEL's shape parameters to your SMPL body and writes one mesh per bone (`skeleton.glb`) plus the rest joints (`skeleton_rig.json`). If you already have SKEL betas, use `--betas file` instead.
+3. Serve the folder and start the camera as usual.
+
+How the overlay follows you: each bone gets a rigid transform from MediaPipe's pose landmarks. The 2D landmark sets its screen position, the 3D world landmark sets its depth and direction, and a perspective camera (55 degree vertical field of view, adjust `S3.fov`) renders the meshes. Bones are scaled to your measured limb lengths. Pointing at a bone highlights its mesh.
+
+Limits: bones follow joint positions, so twist of the forearm and hand is not tracked. The meshes are drawn over you without being hidden by your hands or arms. SKEL is licensed for non-commercial research use only.
 
 ## How classification works
 
